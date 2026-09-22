@@ -21,7 +21,7 @@ export async function POST(request: Request) {
       return Response.json({ erro: "Dados inválidos.", campos: result.campos }, { status: 422 });
     }
     if (result.status === "duplicate") {
-      return Response.json({ erro: "E-mail já cadastrado." }, { status: 409 });
+      return Response.json({ erro: "Telefone já cadastrado." }, { status: 409 });
     }
     return Response.json({ lead: result.lead }, { status: 201 });
   } catch {

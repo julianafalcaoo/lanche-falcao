@@ -17,13 +17,13 @@ export async function cadastrarLead(input: unknown) {
 
   try {
     const lead = await prisma.lead.create({
-      data: { ...parsed.data, emailVerificado: false },
+      data: { ...parsed.data, telefoneVerificado: false },
       select: {
         id: true,
         nome: true,
-        email: true,
         telefone: true,
-        emailVerificado: true,
+        endereco: true,
+        telefoneVerificado: true,
         createdAt: true,
       },
     });

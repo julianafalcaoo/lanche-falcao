@@ -26,11 +26,11 @@ export const cadastroLeadSchema = z.object({
     .min(1, "Informe o nome.")
     .max(200, "O nome deve ter no máximo 200 caracteres.")
     .refine((value) => !/[\p{Cc}\p{Cf}]/u.test(value), "Informe um nome válido."),
-  email: z
-    .string({ error: "Informe um e-mail válido." })
-    .trim()
-    .toLowerCase()
-    .max(254, "O e-mail deve ter no máximo 254 caracteres.")
-    .pipe(z.email({ error: "Informe um e-mail válido." })),
   telefone: telefoneSchema,
+  endereco: z
+    .string({ error: "Informe um endereço válido." })
+    .trim()
+    .min(1, "Informe o endereço.")
+    .max(500, "O endereço deve ter no máximo 500 caracteres.")
+    .refine((value) => !/[\p{Cc}\p{Cf}]/u.test(value), "Informe um endereço válido."),
 });

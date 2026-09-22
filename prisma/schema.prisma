@@ -8,17 +8,18 @@ datasource db {
 }
 
 model Lead {
-  id              String           @id @default(cuid())
-  nome            String
-  email           String           @unique
-  telefone        String
-  emailVerificado Boolean          @default(false)
-  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
-  verificacoesOtp VerificacaoOtp[]
+  id                 String           @id @default(cuid())
+  nome               String
+  telefone           String           @unique
+  endereco           String
+  telefoneVerificado Boolean          @default(false)
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(3)
+  verificacoesOtp    VerificacaoOtp[]
 }
 
 model VerificacaoOtp {
+  // Verificacao do telefone do Lead; nao gera nem envia codigos.
   id          String    @id @default(cuid())
   leadId      String
   // Persistir somente o hash; nunca o codigo OTP em texto puro.
