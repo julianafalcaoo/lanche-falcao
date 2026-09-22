@@ -1,0 +1,33 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Lead {
+  id              String           @id @default(cuid())
+  nome            String
+  email           String           @unique
+  telefone        String
+  emailVerificado Boolean          @default(false)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+  verificacoesOtp VerificacaoOtp[]
+}
+
+model VerificacaoOtp {
+  id          String    @id @default(cuid())
+  leadId      String
+  // Persistir somente o hash; nunca o codigo OTP em texto puro.
+  codigoHash  String
+  expiraEm    DateTime  @db.Timestamptz(3)
+  tentativas  Int       @default(0)
+  utilizadoEm DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
+}
