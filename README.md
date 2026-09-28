@@ -1,32 +1,45 @@
 ﻿# Lanche Falcão
 
-Base frontend da Home/Cardápio, pública e sem autenticação. Next.js App Router, TypeScript e Tailwind CSS 4 com estilos em `src/app/globals.css`.
+Sistema de pedidos do Lanche Falcão, em desenvolvimento como parte da disciplina Projeto Integrador. A aplicação permite consultar os produtos da lanchonete, visualizar imagens, descrições e preços e encontrar opções por categoria ou pesquisa, além de realizar pedidos.
 
-## Executar
+A interface é responsiva, adaptada para celulares, tablets e computadores, e utiliza a identidade visual do Lanche Falcão, localizado na ilha da magia (Parintins/AM).
 
-- `npm run dev`: desenvolvimento.
-- `npm run lint`: ESLint.
-- `npm run build`: build de produção e validação TypeScript.
-- `npm start`: servir o build.
+## Funcionalidades
 
-A tipografia usa fontes do sistema, sem download durante o build.
+- Cardápio com 26 produtos, incluindo salgados, sucos, vitamina de abacate e refrigerantes.
+- Filtros por categoria: Tudo, Salgados fritos, Salgados assados, Sucos e Refrigerantes.
+- Pesquisa por nome ou descrição, sem diferenciar maiúsculas, minúsculas ou acentos.
 
-## Dados reais
+## Tecnologias utilizadas
 
-`src/app/page.tsx` é o ponto de composição. Passe produtos e categorias reais ao `MenuHome`, respeitando `src/types/menu.ts`. As listas iniciais são vazias; não há fixtures ou dados comerciais fictícios.
+- **Next.js 16** — framework React com App Router.
+- **React 19** — construção da interface em componentes.
+- **TypeScript 5** — tipagem estática.
+- **Tailwind CSS 4 e CSS** — estilização e layout responsivo.
+- **ESLint 9** — análise estática do código.
+- **npm** — gerenciamento de dependências e execução de scripts.
 
-`Category` recebe `id` e `name`, permitindo Salgados fritos, Salgados assados, Sucos, Refrigerantes e outras categorias quando cadastradas na fonte real. “Todos” é um controle da interface, não uma entidade. A pesquisa combina nome/descrição com a categoria selecionada, sem diferenciar maiúsculas ou acentos.
+## Executar localmente
 
-`Product` recebe imagem opcional, nome, descrição, preço em centavos e `categoryId`. Imagens locais podem ficar em `public`; para uma fonte externa real, configure seu domínio em `images.remotePatterns` no Next.js. Ausência de imagem tem placeholder neutro. `ProductGrid` e `ProductCard` aceitam `onAdd`; sem callback, o botão permanece desabilitado. O carrinho não está implementado.
+Com Node.js e npm instalados, execute na pasta do projeto:
 
-`PromotionBanner` não renderiza sem `promotion`. O destaque institucional da Home não representa uma promoção. `whatsappNumber` é opcional, no formato internacional somente com dígitos. Sem configuração válida, o botão não abre links. Não há API ou credenciais.
+```bash
+npm install
+npm run dev
+```
 
-## Layout e acessibilidade
+Acesse `http://localhost:3000` no navegador.
 
-Mobile-first, largura máxima de 1200px, grid de 1/2/3/4 colunas, categorias com rolagem horizontal no celular e quebra de linha em telas maiores. A navegação inferior aparece abaixo de 768px; acima disso as ações ficam no cabeçalho. Há espaço para navegação fixa e safe area, foco visível, labels e anúncio de resultados.
+## Estrutura do projeto
 
-Sem produtos, a Home exibe um estado vazio. Quando existem produtos mas os filtros não encontram resultados, exibe uma orientação e permite limpar os filtros. Perfil e carrinho são controles indisponíveis nesta etapa e não exigem login.
+```text
+src/
+├── app/                 # Páginas, layout e estilos globais
+├── components/          # Componentes de interface e do cardápio
+├── data/                # Dados locais do cardápio
+└── types/               # Tipos dos produtos e categorias
+public/
+└── images/              # Logo e imagens dos produtos e categorias
+```
 
-## Limite desta etapa
-
-Não há banco, APIs, autenticação, sessão, OTP, checkout, pedidos, pagamento, retirada ou fidelidade. A Home não depende de identidade do cliente. Essas funcionalidades poderão ser conectadas posteriormente; OTP e código de retirada devem continuar conceitos separados. As regras de fidelidade e pagamento não são simuladas nesta interface.
+Ao final será feito deploy do site.
