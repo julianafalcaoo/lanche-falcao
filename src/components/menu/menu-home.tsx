@@ -9,11 +9,14 @@ import { Icon } from "@/components/ui/icon";
 import { CategoryFilter } from "./category-filter";
 import { PromotionBanner } from "./promotion-banner";
 import { ProductGrid } from "./product-grid";
+import { ProductModal } from "./product-modal";
 import { EmptyProductsState } from "./empty-products-state";
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
 export function MenuHome({ products, categories, promotion, whatsappNumber }: MenuHomeProps) {
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [openedProductId, setOpenedProductId] = useState<string | null>(null);
+  const openedProduct = products.find((product) => product.id === openedProductId);
   const selectedCategory = categories.some((category) => category.id === categoryId) ? categoryId : null;
   const query = normalize(search);
   const visibleProducts = products.filter((product) => (selectedCategory === null || product.categoryId === selectedCategory || (selectedCategory === "sucos" && product.categoryId === "vitaminas")) && normalize(`${product.name} ${product.description}`).includes(query));
@@ -30,9 +33,10 @@ export function MenuHome({ products, categories, promotion, whatsappNumber }: Me
         <div className="section-heading"><div><span className="eyebrow section-eyebrow">ESCOLHA DO SEU JEITO</span><h2 id="menu-title">Nosso cardápio<span className="title-dot">.</span></h2></div><span className="menu-note"><Icon name="menu" width={18} />Explore as opções</span></div>
         <CategoryFilter categories={categories} selected={selectedCategory} onSelect={setCategoryId} />
         <p className="sr-only" role="status" aria-live="polite">{visibleProducts.length} {visibleProducts.length === 1 ? "produto encontrado" : "produtos encontrados"}.</p>
-        {visibleProducts.length ? <ProductGrid products={visibleProducts} categories={categories} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={Boolean(search || selectedCategory)} onClear={clearFilters} />}
+        {visibleProducts.length ? <ProductGrid products={visibleProducts} categories={categories} onOpen={setOpenedProductId} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={Boolean(search || selectedCategory)} onClear={clearFilters} />}
       </section>
       <footer className="site-footer"><span>Lanche <strong>Falcão</strong></span><p>Seu momento de fazer uma pausa.</p><a href="#inicio">Voltar ao início</a></footer>
     </main><WhatsAppButton phoneNumber={whatsappNumber} /><BottomNavigation />
+    {openedProduct && <ProductModal key={openedProduct.id} product={openedProduct} onClose={() => setOpenedProductId(null)} />}
   </>;
 }
