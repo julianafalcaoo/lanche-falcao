@@ -46,6 +46,8 @@ svg { flex-shrink: 0; }
 .primary-link:hover { background: #ffe879; }
 .welcome-art { display: none; }
 .menu-section { margin-top: 34px; scroll-margin-top: 24px; }
+.menu-section.is-searching { margin-top: 0; }
+.menu-section.is-searching .section-heading { margin-bottom: 24px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .section-eyebrow { color: #85748e; font-size: 9px; }
 .section-heading h2 { margin-top: 4px; font-size: 27px; line-height: 1.3; font-weight: 750; letter-spacing: -1px; }
