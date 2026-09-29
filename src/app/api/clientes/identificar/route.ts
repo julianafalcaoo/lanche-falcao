@@ -23,11 +23,9 @@ export async function POST(request: Request) {
     return json({ erro: "TELEFONE_INVALIDO", mensagem: "Informe um telefone brasileiro válido com DDD." }, 422);
   }
   try {
-    // Consultar não autentica. A existência do cadastro não altera a resposta pública.
     await buscarClientePorTelefone(telefone);
     return json({ telefone, podeProsseguirParaVerificacao: true }, 200);
   } catch {
-    // Não incluir erro do driver, telefone ou credenciais na resposta ou em logs.
     return json({ erro: "SERVICO_INDISPONIVEL", mensagem: "Não foi possível continuar agora. Tente novamente mais tarde." }, 503);
   }
 }

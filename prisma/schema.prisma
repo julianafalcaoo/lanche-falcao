@@ -16,4 +16,92 @@ model Cliente {
   telefoneVerificado Boolean  @default(false)
   criadoEm           DateTime @default(now())
   atualizadoEm       DateTime @default(now()) @updatedAt
+  sessoes            Sessao[]
+  pedidos            Pedido[]
+}
+
+enum EstadoDesafioOtp {
+  PENDENTE
+  PROCESSANDO
+  CONSUMIDO
+  INVALIDADO
+}
+
+model DesafioOtp {
+  id        String @id @db.VarChar(64)
+  nome      String @db.VarChar(100)
+  telefone  String
+  pinId     String @unique
+  estado    EstadoDesafioOtp @default(PENDENTE)
+  criadoEm  DateTime @default(now())
+  expiraEm  DateTime
+  consumidoEm DateTime?
+
+  @@index([expiraEm])
+}
+
+model Sessao {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tokenHash String @unique @db.Char(64)
+  clienteId String @db.Uuid
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  criadoEm  DateTime @default(now())
+  expiraEm  DateTime
+
+  @@index([clienteId])
+  @@index([expiraEm])
+}
+
+enum TipoPedido {
+  RETIRADA
+  ENTREGA
+}
+
+enum StatusPedido {
+  PEDIDO_RECEBIDO
+  EM_PREPARACAO
+  PRONTO
+  SAIU_PARA_ENTREGA
+  ENTREGUE
+  PRONTO_PARA_RETIRADA
+  RETIRADO
+}
+
+model Pedido {
+  id                 String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clienteId          String @db.Uuid
+  cliente            Cliente @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  tipo               TipoPedido
+  status             StatusPedido @default(PEDIDO_RECEBIDO)
+  subtotalCentavos   Int
+  totalCentavos      Int
+  chaveIdempotencia  String @db.Uuid
+  requisicaoHash     String @db.Char(64)
+  entregaCep         String? @db.VarChar(8)
+  entregaRua         String? @db.VarChar(200)
+  entregaNumero      String? @db.VarChar(200)
+  entregaBairro      String? @db.VarChar(200)
+  entregaCidade      String? @db.VarChar(200)
+  entregaUf          String? @db.VarChar(2)
+  entregaComplemento String? @db.VarChar(200)
+  entregaReferencia  String? @db.VarChar(200)
+  criadoEm           DateTime @default(now())
+  atualizadoEm       DateTime @default(now()) @updatedAt
+  itens              ItemPedido[]
+
+  @@unique([clienteId, chaveIdempotencia])
+  @@index([clienteId, criadoEm(sort: Desc), id(sort: Desc)])
+}
+
+model ItemPedido {
+  id                    String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pedidoId              String @db.Uuid
+  pedido                Pedido @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  produtoId             String @db.VarChar(100)
+  nomeProduto           String @db.VarChar(200)
+  precoUnitarioCentavos  Int
+  quantidade            Int
+  subtotalCentavos      Int
+
+  @@unique([pedidoId, produtoId])
 }

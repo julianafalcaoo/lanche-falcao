@@ -7,10 +7,13 @@ import type { AddressErrors, CheckoutSelection } from "@/types/checkout";
 import { useCheckoutDraft } from "./use-checkout-draft";
 import { DeliveryAddressForm, validateAddress } from "./delivery-address-form";
 import { OrderSummary } from "./order-summary";
+import { useCurrentCustomer } from "./use-current-customer";
+import { CustomerIdentification } from "./customer-identification";
 import styles from "./checkout-page.module.css";
 
 export function CheckoutPage({ onContinue }: { onContinue?: (selection: CheckoutSelection) => void }) {
   const { items, ready } = useCart();
+  const session = useCurrentCustomer();
   const { orderType, setOrderType, address, setAddress, ready: draftReady } = useCheckoutDraft();
   const [errors, setErrors] = useState<AddressErrors>({});
   const [typeError, setTypeError] = useState("");
@@ -33,6 +36,10 @@ export function CheckoutPage({ onContinue }: { onContinue?: (selection: Checkout
       formRef.current?.querySelector<HTMLInputElement>(`[name="${firstError}"]`)?.focus();
       return;
     }
+    if (session.status !== "authenticated" || session.loggingOut) {
+      setFeedback("Conclua sua identificação para continuar.");
+      return;
+    }
     const selection: CheckoutSelection = orderType === "pickup" ? { orderType } : {
       orderType,
       address: {
@@ -43,7 +50,7 @@ export function CheckoutPage({ onContinue }: { onContinue?: (selection: Checkout
       },
     };
     if (onContinue) onContinue(selection);
-    else setFeedback("Dados validados. A próxima etapa ainda não está disponível. Nenhum pedido foi confirmado.");
+    else setFeedback("Identificação concluída. Tudo pronto para a próxima etapa: pagamento, que ainda não está disponível. Nenhum pedido foi confirmado.");
   }
 
   return <main className={`container ${styles.page}`}>
@@ -52,7 +59,8 @@ export function CheckoutPage({ onContinue }: { onContinue?: (selection: Checkout
     {!ready || !draftReady ? <p role="status">Carregando checkout…</p> : items.length === 0 ? <section className={styles.empty}>
       <h2>Seu carrinho está vazio.</h2><p>Adicione produtos para iniciar o checkout.</p><Link className={styles.primary} href="/#cardapio">Ver cardápio</Link>
     </section> : <div className={styles.layout}>
-      <form ref={formRef} className={styles.panel} onSubmit={submit} noValidate>
+      <div className={styles.panel}>
+      <form id="checkout-delivery" ref={formRef} onSubmit={submit} noValidate>
         <fieldset className={styles.orderType} aria-describedby={typeError ? "order-type-error" : undefined}>
           <legend>Como você quer receber seu pedido?</legend>
           <div className={styles.options}>{([{ value: "pickup", label: "Retirar na lanchonete" }, { value: "delivery", label: "Entrega" }] as const).map((option) => <label className={styles.option} key={option.value}>
@@ -67,10 +75,12 @@ export function CheckoutPage({ onContinue }: { onContinue?: (selection: Checkout
           setErrors((current) => ({ ...current, [field]: undefined }));
           setFeedback("");
         }} />}
-        <button className={styles.primary} type="submit" aria-describedby="next-step-note">Continuar</button>
-        <p id="next-step-note" className={styles.hint}>A próxima etapa ainda será integrada.</p>
-        <p className={styles.feedback} role="status">{feedback}</p>
       </form>
+        <CustomerIdentification session={session} />
+        <button className={styles.primary} type="submit" form="checkout-delivery" disabled={session.status !== "authenticated" || session.loggingOut} aria-describedby="next-step-note">Continuar</button>
+        <p id="next-step-note" className={styles.hint}>{session.status === "authenticated" ? "Após validar seus dados, a próxima etapa será o pagamento." : "Confirme sua identificação para continuar."}</p>
+        <p className={styles.feedback} role="status">{session.status === "authenticated" ? feedback : ""}</p>
+      </div>
       <OrderSummary delivery={orderType === "delivery"} />
     </div>}
   </main>;

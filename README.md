@@ -18,7 +18,11 @@ A interface é responsiva, adaptada para celulares, tablets e computadores, e ut
 - **Tailwind CSS 4 e CSS** — estilização e layout responsivo.
 - **ESLint 9** — análise estática do código.
 - **npm** — gerenciamento de dependências e execução de scripts.
-
+## APIS USADAS
+- SMS -> INFOBIP
+- PROCURAR END POR CEP -> VIACEP
+- PAGAMENTOS -> MERCADO PAGO
+- GPS ->
 ## Executar localmente
 
 Com Node.js e npm instalados, execute na pasta do projeto:
