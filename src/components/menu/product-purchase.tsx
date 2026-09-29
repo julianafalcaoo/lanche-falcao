@@ -1,17 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { useCart } from "@/components/cart/cart-provider";
+import { MAX_CART_QUANTITY } from "@/lib/cart";
 
 interface ProductPurchaseProps {
   productId: string;
   priceInCents: number;
-  onAdd?: (selection: { productId: string; quantity: number }) => void;
 }
 
-export function ProductPurchase({ productId, priceInCents, onAdd }: ProductPurchaseProps) {
+export function ProductPurchase({ productId, priceInCents }: ProductPurchaseProps) {
+  const { addItem, ready } = useCart();
+  const [addedQuantity, setAddedQuantity] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const subtotalInCents = priceInCents * quantity;
-  const maxQuantity = Math.floor(Number.MAX_SAFE_INTEGER / priceInCents);
+  const maxQuantity = MAX_CART_QUANTITY;
 
   return <div className="product-purchase">
     <div className="quantity-row">
@@ -24,9 +28,9 @@ export function ProductPurchase({ productId, priceInCents, onAdd }: ProductPurch
     </div>
     <div className="subtotal-row"><span>Subtotal</span><output aria-live="polite" aria-label="Subtotal">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(subtotalInCents / 100)}</output></div>
     <div className="product-actions">
-      <button type="button" className="product-add" disabled={!onAdd} aria-describedby={!onAdd ? "cart-notice" : undefined} onClick={() => onAdd?.({ productId, quantity })}>Adicionar ao carrinho</button>
-      <button type="button" className="product-cart" disabled aria-describedby="cart-notice">Ir para o carrinho</button>
+      <button type="button" className="product-add" disabled={!ready} onClick={() => { addItem(productId, quantity); setAddedQuantity((value) => value + quantity); }}>Adicionar ao carrinho</button>
+      <Link className="product-cart" href="/carrinho">Ir para o carrinho</Link>
     </div>
-    <p id="cart-notice" className="cart-notice">Carrinho em breve.</p>
+    <p className="cart-notice" role="status">{addedQuantity > 0 ? `${addedQuantity} ${addedQuantity === 1 ? "unidade adicionada" : "unidades adicionadas"} ao carrinho.` : ""}</p>
   </div>;
 }

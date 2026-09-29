@@ -1,7 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import type { MenuHomeProps } from "@/types/menu";
+import { useCart } from "@/components/cart/cart-provider";
 import { Header } from "@/components/layout/header";
 import { BottomNavigation } from "@/components/layout/bottom-navigation";
 import { WhatsAppButton } from "@/components/layout/whatsapp-button";
@@ -13,6 +14,13 @@ import { ProductModal } from "./product-modal";
 import { EmptyProductsState } from "./empty-products-state";
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
 export function MenuHome({ products, categories, promotion, whatsappNumber }: MenuHomeProps) {
+  const { addItem, ready, totalQuantity } = useCart();
+  const [cartNotice, setCartNotice] = useState("");
+  useEffect(() => {
+    if (!cartNotice) return;
+    const timeout = window.setTimeout(() => setCartNotice(""), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [cartNotice]);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [openedProductId, setOpenedProductId] = useState<string | null>(null);
@@ -33,10 +41,14 @@ export function MenuHome({ products, categories, promotion, whatsappNumber }: Me
         <div className="section-heading"><div><span className="eyebrow section-eyebrow">ESCOLHA DO SEU JEITO</span><h2 id="menu-title">Nosso cardápio<span className="title-dot">.</span></h2></div><span className="menu-note"><Icon name="menu" width={18} />Explore as opções</span></div>
         <CategoryFilter categories={categories} selected={selectedCategory} onSelect={setCategoryId} />
         <p className="sr-only" role="status" aria-live="polite">{visibleProducts.length} {visibleProducts.length === 1 ? "produto encontrado" : "produtos encontrados"}.</p>
-        {visibleProducts.length ? <ProductGrid products={visibleProducts} categories={categories} onOpen={setOpenedProductId} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={Boolean(search || selectedCategory)} onClear={clearFilters} />}
+        {visibleProducts.length ? <ProductGrid products={visibleProducts} categories={categories} onOpen={setOpenedProductId} onAdd={ready ? (product) => {
+          addItem(product.id, 1);
+          setCartNotice(`${product.name} adicionado ao carrinho. Total: ${totalQuantity + 1} ${(totalQuantity + 1) === 1 ? "unidade" : "unidades"}.`);
+        } : undefined} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={Boolean(search || selectedCategory)} onClear={clearFilters} />}
       </section>
       <footer className="site-footer"><span>Lanche <strong>Falcão</strong></span><p>Seu momento de fazer uma pausa.</p><a href="#inicio">Voltar ao início</a></footer>
     </main><WhatsAppButton phoneNumber={whatsappNumber} /><BottomNavigation />
+    <div className={`cart-feedback${cartNotice ? " is-visible" : ""}`} role="status" aria-live="polite" aria-atomic="true">{cartNotice}</div>
     {openedProduct && <ProductModal key={openedProduct.id} product={openedProduct} onClose={() => setOpenedProductId(null)} />}
   </>;
 }
