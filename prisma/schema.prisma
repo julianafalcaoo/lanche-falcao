@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client"
+  output = "../src/generated/prisma"
+  moduleFormat = "esm"
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Cliente {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nome               String
+  telefone           String   @unique
+  telefoneVerificado Boolean  @default(false)
+  criadoEm           DateTime @default(now())
+  atualizadoEm       DateTime @default(now()) @updatedAt
+}

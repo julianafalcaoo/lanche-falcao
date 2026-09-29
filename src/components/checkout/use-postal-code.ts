@@ -22,7 +22,6 @@ export function usePostalCode(address: DeliveryAddress, onChange: (field: keyof 
         lastCode.current = "";
         setStatus("");
         setRetry(false);
-        // A restored or manually edited address also belongs to the previous CEP.
         for (const key of ["street", "neighborhood", "city", "state"] as const) onChange(key, "");
       }
     }

@@ -4,14 +4,24 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:check": "node --conditions=react-server --env-file=.env scripts/check-db.mjs",
+    "test:identificacao": "node --conditions=react-server --env-file=.env --test tests/identificacao.test.mjs"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "dotenv": "^18.0.4",
+    "libphonenumber-js": "^1.13.14",
     "next": "16.3.6",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -21,7 +31,12 @@
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
+    "prisma": "^7.10.0",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "type": "module",
+  "engines": {
+    "node": "^24.0.0"
   }
 }
