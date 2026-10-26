@@ -10,6 +10,6 @@ export function BottomNavigation() {
     <Link href="/#inicio" aria-current={isHome ? "page" : undefined}><Icon name="home" /><span>Início</span></Link>
     {isHome ? <button type="button" onClick={() => document.getElementById("menu-search")?.focus()}><Icon name="search" /><span>Buscar</span></button> : <Link href="/#menu-search"><Icon name="search" /><span>Buscar</span></Link>}
     <CartLink />
-    <button type="button" disabled aria-label="Perfil — em breve"><Icon name="user" /><span>Perfil</span><small>Em breve</small></button>
+    <button type="button" disabled aria-label="Perfil "><Icon name="user" /><span>Perfil</span></button>
   </nav>;
 }

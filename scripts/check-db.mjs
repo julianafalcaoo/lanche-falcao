@@ -57,6 +57,18 @@ try {
     assert.equal(orderColumn(table, "subtotalCentavos")?.data_type, "integer");
   }
   assert.equal(orderColumn("Pedido", "totalCentavos")?.data_type, "integer");
+  assert.equal(orderColumn("Pedido", "trocoParaCentavos")?.data_type, "integer");
+  assert.equal(orderColumn("Pedido", "precisaTroco")?.data_type, "boolean");
+  assert.equal(orderColumn("Pedido", "formaPagamento")?.data_type, "USER-DEFINED");
+  assert.equal(orderColumn("Pedido", "statusPagamento")?.data_type, "USER-DEFINED");
+  assert.match(orderColumn("Pedido", "statusPagamento")?.column_default ?? "", /PENDENTE/);
+  const paymentEnums = await prisma.$queryRaw`
+    SELECT t.typname, e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = 'public' AND t.typname IN ('FormaPagamento', 'StatusPagamento') ORDER BY e.enumsortorder
+  `;
+  assert.deepEqual(paymentEnums.filter(item => item.typname === "FormaPagamento").map(item => item.enumlabel), ["PIX", "DINHEIRO", "CARTAO"]);
+  assert.deepEqual(paymentEnums.filter(item => item.typname === "StatusPagamento").map(item => item.enumlabel), ["PENDENTE", "APROVADO", "RECUSADO", "CANCELADO", "ESTORNADO", "ESTORNADO_PARCIAL", "CONTESTADO"]);
   assert.equal(orderColumn("ItemPedido", "precoUnitarioCentavos")?.data_type, "integer");
   assert.equal(orderColumn("ItemPedido", "quantidade")?.data_type, "integer");
   assert.match(orderColumn("Pedido", "status").column_default, /PEDIDO_RECEBIDO/);
@@ -77,6 +89,19 @@ try {
   for (const name of ["Pedido_valores_check", "Pedido_status_tipo_check", "Pedido_endereco_check", "ItemPedido_quantidade_check", "ItemPedido_valores_check"]) {
     assert.ok(constraints.some((item) => item.conname === name), `Constraint ausente: ${name}`);
   }
+  assert.ok(constraints.some(item => item.conname === "Pedido_pagamento_check"));
+  console.log("Formas/status de pagamento, troco e CHECK verificados, somente leitura.");
+  const attemptColumns = await prisma.$queryRaw`
+    SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'TentativaPagamento'
+  `;
+  for (const name of ["pedidoId", "chaveProvedor", "chaveCliente", "requisicaoHash", "orderId", "statusExterno", "envios", "bloqueadaAte", "qrCode", "statusLocal", "metodoExterno", "tipoMetodoExterno", "reconciliadaEm", "atualizadaNoProvedor"]) {
+    assert.ok(attemptColumns.some(column => column.column_name === name));
+  }
+  const attemptIndexes = await prisma.$queryRaw`
+    SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'TentativaPagamento'
+  `;
+  assert.ok(attemptIndexes.some(index => index.indexname === "TentativaPagamento_ativa_key"));
+  console.log(`Tentativas de pagamento existentes: ${await prisma.tentativaPagamento.count()}. Estrutura e exclusividade de tentativa ativa verificadas.`);
   assert.match(constraints.find((item) => item.conname === "Pedido_clienteId_fkey")?.definition ?? "", /REFERENCES "Cliente"\(id\).*ON DELETE RESTRICT/);
   assert.match(constraints.find((item) => item.conname === "ItemPedido_pedidoId_fkey")?.definition ?? "", /REFERENCES "Pedido"\(id\).*ON DELETE CASCADE/);
   const orderIndexes = await prisma.$queryRaw`
@@ -87,6 +112,35 @@ try {
   assert.ok(orderIndexes.some((item) => item.indexname === "Pedido_clienteId_criadoEm_id_idx"));
   console.log(`Pedidos existentes: ${await prisma.pedido.count()}; itens existentes: ${await prisma.itemPedido.count()}.`);
   console.log("Pedido e ItemPedido: tipos monetários, UUIDs, enums, índices, relacionamentos e CHECKs verificados, sem inserir dados.");
+  const webhookColumns = await prisma.$queryRaw`
+    SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'WebhookOrder'
+  `;
+  for (const name of ["id", "orderId", "processadoEm", "proximaExecucaoEm", "reservaToken", "reservadaAte", "tentativas", "codigoErro"]) {
+    assert.ok(webhookColumns.some(column => column.column_name === name));
+  }
+  const webhookStructure = await prisma.$queryRaw`
+    SELECT column_name, data_type, character_maximum_length, is_nullable, column_default
+    FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'WebhookOrder'
+  `;
+  const webhookColumn = name => webhookStructure.find(column => column.column_name === name);
+  assert.equal(webhookColumn("id").character_maximum_length, 64);
+  assert.equal(webhookColumn("id").is_nullable, "NO");
+  assert.equal(webhookColumn("orderId").character_maximum_length, 64);
+  assert.equal(webhookColumn("orderId").is_nullable, "NO");
+  assert.equal(webhookColumn("reservaToken").data_type, "uuid");
+  assert.equal(webhookColumn("processadoEm").is_nullable, "YES");
+  assert.match(webhookColumn("tentativas").column_default, /0/);
+  assert.match(webhookColumn("proximaExecucaoEm").column_default, /CURRENT_TIMESTAMP|now\(/i);
+  const webhookIndexes = await prisma.$queryRaw`
+    SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'WebhookOrder'
+  `;
+  assert.ok(webhookIndexes.some(index => index.indexname === "WebhookOrder_pkey" && /UNIQUE/.test(index.indexdef)));
+  assert.ok(webhookIndexes.some(index => index.indexname === "WebhookOrder_processadoEm_proximaExecucaoEm_idx" && /"processadoEm", "proximaExecucaoEm"/.test(index.indexdef)));
+  const activeIndex = await prisma.$queryRaw`
+    SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'TentativaPagamento_ativa_key'
+  `;
+  assert.match(activeIndex[0]?.indexdef ?? "", /UNIQUE.*WHERE.*encerrada.*false/);
+  console.log(`Fila Orders disponível: ${await prisma.webhookOrder.count()} notificações persistidas. Verificação somente leitura.`);
 } finally {
   await prisma.$disconnect();
 }

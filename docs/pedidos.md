@@ -1,6 +1,6 @@
-# Pedidos — base server-side
+﻿# Pedidos — base server-side
 
-Esta etapa fornece persistência e APIs de pedidos autenticados. O checkout ainda não chama essas rotas. Não há pagamento, Mercado Pago, webhook, acompanhamento visual, código de retirada, fidelidade ou alteração do WhatsApp.
+Esta etapa fornece persistência e APIs de pedidos autenticados. O checkout agora cria pedidos e integra pagamento de teste: veja [Mercado Pago / Orders](./mercado-pago.md). A modelagem das formas está em [Formas de pagamento](./pagamentos.md). Webhook e reconciliação foram implementados posteriormente: veja [Webhook Orders](./webhook-orders.md). Acompanhamento operacional, código de retirada, fidelidade e alteração do WhatsApp permanecem pendentes.
 
 ## Modelos e snapshots
 
@@ -30,6 +30,7 @@ Retirada:
 ```json
 {
   "tipo": "RETIRADA",
+  "formaPagamento": "PIX",
   "itens": [
     { "productId": "coxinha-frango", "quantity": 2 }
   ]
@@ -41,6 +42,7 @@ Entrega usa `tipo: "ENTREGA"` e `endereco` com os mesmos nomes de campos do chec
 ```json
 {
   "tipo": "ENTREGA",
+  "formaPagamento": "PIX",
   "itens": [{ "productId": "coxinha-frango", "quantity": 2 }],
   "endereco": {
     "postalCode": "69000-000",
@@ -92,3 +94,6 @@ npm run build
 ```
 
 `test:pedidos` reutiliza o runner de banco descartável (`scripts/test-auth.mjs pedidos`), aplica todas as migrations e remove o banco ao terminar. As fixtures e alterações de catálogo em memória são exclusivas dos testes. Fetch é bloqueado e nenhum SMS, pagamento ou API externa é chamado. O banco principal não recebe dados fictícios. `db:check` apenas consulta metadados e contagens.
+# Recuperação do checkout após alteração do carrinho
+
+A recuperação no navegador compara a assinatura canônica da intenção atual com o corpo da solicitação salva. Mesmo carrinho, tipo, endereço aplicável, pagamento e troco recuperam a mesma chave/Pedido após reload. Uma alteração desvincula o fluxo anterior; novo Pedido só é solicitado ao finalizar novamente. Os snapshots e pagamentos anteriores permanecem intactos. Preços continuam calculados no servidor. A conclusão só limpa itens que ainda correspondam à compra, inclusive no armazenamento persistido. Ver detalhes em [Mercado Pago](mercado-pago.md).

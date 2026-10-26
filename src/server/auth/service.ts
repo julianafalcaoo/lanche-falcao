@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma.ts";
 import { normalizarTelefoneBrasileiro } from "../../lib/telefone.ts";
 import { solicitarOtp, verificarOtp, OtpError } from "../infobip/otp.ts";
 import { newToken, tokenHash, SESSION_SECONDS } from "./session.ts";
+import { assertOtpAccess } from "./otp-access.ts";
 
 export class AuthError extends Error {
   readonly status: number;
@@ -21,6 +22,7 @@ export async function solicitarDesafio(nome: unknown, value: unknown) {
   }
   const telefone = normalizarTelefoneBrasileiro(value);
   if (!telefone) throw new OtpError("TELEFONE_INVALIDO");
+  assertOtpAccess(telefone);
   const expiraEm = new Date(Date.now() + 5 * 60 * 1000);
   const { pinId } = await solicitarOtp(telefone);
   const desafioId = randomBytes(32).toString("hex");

@@ -3,6 +3,7 @@ import { protectMutation, authFailure } from "../../../../../server/auth/http.ts
 import { otpBody, otpJson } from "../../../../../server/infobip/http.ts";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {

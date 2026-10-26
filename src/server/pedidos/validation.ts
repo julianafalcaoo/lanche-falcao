@@ -40,9 +40,28 @@ export function parsePedido(value: unknown): {
   tipo: "RETIRADA" | "ENTREGA";
   itens: { productId: string; quantity: number }[];
   endereco: DeliveryAddress | null;
+  formaPagamento: "PIX" | "DINHEIRO" | "CARTAO";
+  precisaTroco: boolean | null;
+  trocoParaCentavos: number | null;
 } {
   if (!object(value)) throw new PedidoError("PEDIDO_INVALIDO", 400, "Envie um objeto JSON válido.");
-  onlyKeys(value, ["tipo", "itens", "endereco"]);
+  onlyKeys(value, ["tipo", "itens", "endereco", "formaPagamento", "precisaTroco", "trocoParaCentavos"]);
+  const formaPagamento = value.formaPagamento;
+  if (formaPagamento !== "PIX" && formaPagamento !== "DINHEIRO" && formaPagamento !== "CARTAO") throw new PedidoError("PAGAMENTO_INVALIDO", 422, "Escolha PIX, DINHEIRO ou CARTAO.");
+  let precisaTroco: boolean | null = null;
+  let trocoParaCentavos: number | null = null;
+  if (formaPagamento !== "DINHEIRO") {
+    if ("precisaTroco" in value || "trocoParaCentavos" in value) throw new PedidoError("TROCO_INVALIDO", 422, "Troco só se aplica a pagamento em dinheiro.");
+  } else {
+    if (typeof value.precisaTroco !== "boolean") throw new PedidoError("TROCO_INVALIDO", 422, "Informe se precisa de troco.");
+    precisaTroco = value.precisaTroco;
+    if (precisaTroco) {
+      if (typeof value.trocoParaCentavos !== "number" || !Number.isSafeInteger(value.trocoParaCentavos) || value.trocoParaCentavos <= 0 || value.trocoParaCentavos > 2147483647) throw new PedidoError("TROCO_INVALIDO", 422, "Informe um valor positivo de troco em centavos inteiros.");
+      trocoParaCentavos = value.trocoParaCentavos;
+    } else if (value.trocoParaCentavos !== undefined && value.trocoParaCentavos !== null) {
+      throw new PedidoError("TROCO_INVALIDO", 422, "Não informe valor quando não precisar de troco.");
+    }
+  }
   if (value.tipo !== "RETIRADA" && value.tipo !== "ENTREGA") throw new PedidoError("TIPO_INVALIDO", 422, "Escolha RETIRADA ou ENTREGA.");
   if (!Array.isArray(value.itens) || !value.itens.length || value.itens.length > MAX_ITEMS) throw new PedidoError("ITENS_INVALIDOS", 422, "Informe de 1 a 100 produtos distintos.");
   const ids = new Set<string>();
@@ -56,7 +75,7 @@ export function parsePedido(value: unknown): {
     return { productId: item.productId, quantity: item.quantity };
   }).sort((a, b) => a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0);
   if (value.tipo === "RETIRADA" && value.endereco != null) throw new PedidoError("ENDERECO_INVALIDO", 422, "Não envie endereço para retirada.");
-  return { tipo: value.tipo, itens, endereco: value.tipo === "ENTREGA" ? address(value.endereco) : null };
+  return { tipo: value.tipo, itens, endereco: value.tipo === "ENTREGA" ? address(value.endereco) : null, formaPagamento, precisaTroco, trocoParaCentavos };
 }
 
 export function parseKey(value: string | null) {

@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+﻿import { test, expect, type Page } from "@playwright/test";
 
 const customer = { nome: "Maria Teste", telefone: "+5592999999999" };
 const draft = { orderType: "pickup", address: { postalCode: "", street: "", number: "", neighborhood: "", city: "", state: "", complement: "", reference: "" } };
@@ -61,7 +61,7 @@ test("consulta sessão sem flicker e recupera falha inesperada", async ({ page }
   api.sessionError(false);
   await page.getByRole("button", { name: "Tentar novamente", exact: true }).click();
   await expect(page.getByLabel("Nome", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continuar", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Finalizar pedido", exact: true })).toBeDisabled();
 });
 
 test("valida campos, bloqueia clique duplicado e mantém contrato e foco OTP", async ({ page }) => {
@@ -121,6 +121,7 @@ test("OTP errado, expirado, reenvio limitado e alteração de celular", async ({
 test("OTP correto consulta me, preserva carrinho/draft, refresh e logout", async ({ page }) => {
   const api = await setup(page);
   await page.goto("/checkout"); await identify(page);
+  await page.getByRole("radio", { name: "PIX", exact: true }).check();
   const before = await storage(page);
   await page.getByLabel("Código de 4 dígitos").fill("0123");
   await page.getByRole("button", { name: "Confirmar código" }).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
@@ -129,8 +130,6 @@ test("OTP correto consulta me, preserva carrinho/draft, refresh e logout", async
   const verification = api.requests.find((r) => r.path === "otp/verificar")!;
   expect(Object.keys(verification.body).sort()).toEqual(["codigo", "desafioId"]);
   expect(await storage(page)).toEqual(before);
-  await page.getByRole("button", { name: "Continuar", exact: true }).click();
-  await expect(page.getByText(/Identificação concluída. Tudo pronto/)).toBeVisible();
   await page.reload();
   await expect(page.getByText("Pedido para Maria Teste")).toBeVisible();
   await expect(page.getByLabel("Nome", { exact: true })).toHaveCount(0);
@@ -146,13 +145,12 @@ test("autenticado valida Entrega e preserva endereço no refresh", async ({ page
   await setup(page, true);
   await page.goto("/checkout");
   await expect(page.getByText("Pedido para Maria Teste")).toBeVisible();
+  await page.getByRole("radio", { name: "PIX", exact: true }).check();
   await page.getByRole("radio", { name: "Entrega", exact: true }).check();
-  await page.getByRole("button", { name: "Continuar", exact: true }).click();
+  await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
   await expect(page.getByLabel("CEP *", { exact: true })).toBeFocused();
   for (const [label, value] of [["CEP *", "69000000"], ["Rua *", "Rua de teste"], ["Número *", "10"], ["Bairro *", "Centro"], ["Cidade *", "Manaus"], ["UF *", "AM"]]) await page.getByLabel(label, { exact: true }).fill(value);
   const before = await storage(page);
-  await page.getByRole("button", { name: "Continuar", exact: true }).click();
-  await expect(page.getByText(/Identificação concluída. Tudo pronto/)).toBeVisible();
   await page.reload();
   await expect(page.getByRole("radio", { name: "Entrega", exact: true })).toBeChecked();
   await expect(page.getByLabel("Rua *", { exact: true })).toHaveValue("Rua de teste");
@@ -185,7 +183,7 @@ for (const [code, message] of [
     await page.getByLabel("Código de 4 dígitos").fill("1234");
     await page.getByRole("button", { name: "Confirmar código" }).click();
     await expect(page.getByText(message)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Continuar", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Finalizar pedido", exact: true })).toBeDisabled();
     expect(api.requests.filter((r) => r.path === "otp/solicitar")).toHaveLength(1);
   });
 }
@@ -215,10 +213,81 @@ test("sem tipo válido ou carrinho não conclui a etapa", async ({ page }) => {
     sessionStorage.setItem("lanche-falcao:checkout", JSON.stringify(draft));
   });
   await page.reload();
-  await page.getByRole("button", { name: "Continuar", exact: true }).click();
+  await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
   await expect(page.getByText("Escolha Retirada ou Entrega para continuar.")).toBeVisible();
   await page.evaluate(() => localStorage.setItem("lanche-falcao:cart", "[]"));
   await page.reload();
   await expect(page.getByText("Seu carrinho está vazio.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continuar", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Finalizar pedido", exact: true })).toHaveCount(0);
+});
+
+for (const width of [320, 375, 430, 768, 1024, 1440]) {
+  test(`formas de pagamento, troco e draft em ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const api = await setup(page, true);
+    await page.goto("/checkout");
+    const submit = page.getByRole("button", { name: "Finalizar pedido", exact: true });
+    await expect(page.getByRole("group", { name: "Forma de pagamento", exact: true })).toBeVisible();
+    await submit.click();
+    await expect(page.getByText("Escolha uma forma de pagamento para continuar.")).toBeVisible();
+    await expect(page.getByRole("radio", { name: "PIX", exact: true })).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(page.getByRole("radio", { name: "PIX", exact: true })).toBeChecked();
+    await expect(page.getByText("Ao finalizar, use o QR Code ou o código Pix para pagar.")).toBeVisible();
+    await page.getByRole("radio", { name: "Dinheiro", exact: true }).check();
+    await expect(page.getByRole("group", { name: "Precisa de troco?", exact: true })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Não", exact: true })).toBeChecked();
+    const amount = page.getByLabel("Troco para quanto?", { exact: true });
+    await expect(amount).toHaveCount(0);
+    await page.getByRole("radio", { name: "Sim", exact: true }).check();
+    for (const value of ["", "-1", "0", "abc", "1,00", "20,001"]) {
+      await amount.fill(value);
+      await submit.click();
+      await expect(page.locator("#payment-error")).not.toBeEmpty();
+      await expect(amount).toBeFocused();
+    }
+    // Duas esfirras do catálogo real somam R$ 12,00.
+    await amount.fill("20,00");
+    await page.reload();
+    await expect(page.getByRole("radio", { name: "Dinheiro", exact: true })).toBeChecked();
+    await expect(page.getByRole("radio", { name: "Sim", exact: true })).toBeChecked();
+    await expect(amount).toHaveValue("20,00");
+    for (const method of ["PIX", "Cartão"]) {
+      await amount.fill("inválido");
+      await submit.click();
+      await page.getByRole("radio", { name: method, exact: true }).check();
+      await expect(amount).toHaveCount(0);
+      await expect(page.locator("#payment-error")).toBeEmpty();
+      await page.reload();
+      await expect(page.getByRole("radio", { name: method, exact: true })).toBeChecked();
+      await page.getByRole("radio", { name: "Dinheiro", exact: true }).check();
+      await expect(page.getByRole("radio", { name: "Não", exact: true })).toBeChecked();
+      await page.getByRole("radio", { name: "Sim", exact: true }).check();
+      await expect(amount).toHaveValue("");
+    }
+    await expect(page.getByLabel(/CVV|Número do cartão|Validade/)).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const box = await amount.boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    expect(api.requests.every(request => request.path === "me")).toBe(true);
+  });
+}
+test("draft ignora pagamento corrompido e dados de troco não aplicáveis", async ({ page }) => {
+  await setup(page, true);
+  await page.goto("/checkout");
+  for (const payment of [
+    { formaPagamento: "BOLETO", precisaTroco: true, trocoValor: "20,00" },
+    { formaPagamento: "DINHEIRO", precisaTroco: "sim", trocoValor: "20,00" },
+  ]) {
+    await page.evaluate(payment => {
+      const saved = JSON.parse(sessionStorage.getItem("lanche-falcao:checkout")!);
+      sessionStorage.setItem("lanche-falcao:checkout", JSON.stringify({ ...saved, ...payment }));
+    }, payment);
+    await page.reload();
+    await expect(page.locator('input[name="formaPagamento"]:checked')).toHaveCount(0);
+  }
+  await page.evaluate(() => sessionStorage.setItem("lanche-falcao:checkout", "{quebrado"));
+  await page.reload();
+  await expect(page.locator('input[name="formaPagamento"]:checked')).toHaveCount(0);
+  await expect(page.locator('input[name="orderType"]:checked')).toHaveCount(0);
 });

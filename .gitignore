@@ -14,6 +14,7 @@
 /coverage
 /test-results/
 /playwright-report/
+/backups/
 
 # next.js
 /.next/
@@ -25,6 +26,11 @@
 # misc
 .DS_Store
 *.pem
+*.key
+*.dump
+*.backup
+*.sql.gz
+/.tools/
 
 # debug
 npm-debug.log*

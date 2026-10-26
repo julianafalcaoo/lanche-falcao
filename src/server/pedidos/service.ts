@@ -7,6 +7,7 @@ import { PedidoError, isUuid, parsePedido } from "./validation.ts";
 
 const select = {
   id: true, tipo: true, status: true, subtotalCentavos: true, totalCentavos: true,
+  formaPagamento: true, statusPagamento: true, precisaTroco: true, trocoParaCentavos: true,
   criadoEm: true, atualizadoEm: true,
   entregaCep: true, entregaRua: true, entregaNumero: true, entregaBairro: true,
   entregaCidade: true, entregaUf: true, entregaComplemento: true, entregaReferencia: true,
@@ -18,6 +19,8 @@ type StoredPedido = Prisma.PedidoGetPayload<{ select: typeof select }>;
 function publicPedido(pedido: StoredPedido) {
   return {
     id: pedido.id, tipo: pedido.tipo, status: pedido.status,
+    formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento,
+    precisaTroco: pedido.precisaTroco, trocoParaCentavos: pedido.trocoParaCentavos,
     subtotalCentavos: pedido.subtotalCentavos, totalCentavos: pedido.totalCentavos,
     criadoEm: pedido.criadoEm, atualizadoEm: pedido.atualizadoEm, itens: pedido.itens,
     ...(pedido.tipo === "ENTREGA" ? { endereco: {
@@ -48,10 +51,13 @@ export async function criarPedido(clienteId: string, key: string, body: unknown)
   const subtotalCentavos = itens.reduce((sum, item) => sum + item.subtotalCentavos, 0);
   if (!Number.isSafeInteger(subtotalCentavos) || subtotalCentavos > 2147483647) throw new PedidoError("VALOR_INVALIDO", 422, "O valor do pedido excede o limite permitido.");
   const endereco = input.endereco;
+  if (input.precisaTroco && input.trocoParaCentavos! < subtotalCentavos) throw new PedidoError("TROCO_INSUFICIENTE", 422, "O valor para troco deve ser maior ou igual ao total do pedido.");
   try {
     const pedido = await prisma.$transaction(async (tx) => tx.pedido.create({
       data: {
         clienteId, tipo: input.tipo, status: "PEDIDO_RECEBIDO", subtotalCentavos, totalCentavos: subtotalCentavos,
+        formaPagamento: input.formaPagamento, statusPagamento: "PENDENTE",
+        precisaTroco: input.precisaTroco, trocoParaCentavos: input.trocoParaCentavos,
         chaveIdempotencia: key, requisicaoHash: hash,
         ...(endereco ? {
           entregaCep: endereco.postalCode, entregaRua: endereco.street, entregaNumero: endereco.number,

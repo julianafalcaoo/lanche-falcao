@@ -1,0 +1,16 @@
+.git
+.vercel
+.next
+node_modules
+.env*
+backups
+*.dump
+*.backup
+*.pem
+*.key
+*.sql.gz
+test-results
+playwright-report
+coverage
+.tools
+*.log

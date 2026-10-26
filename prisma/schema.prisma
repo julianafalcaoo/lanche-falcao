@@ -67,6 +67,22 @@ enum StatusPedido {
   RETIRADO
 }
 
+enum FormaPagamento {
+  PIX
+  DINHEIRO
+  CARTAO
+}
+
+enum StatusPagamento {
+  PENDENTE
+  APROVADO
+  RECUSADO
+  CANCELADO
+  ESTORNADO
+  ESTORNADO_PARCIAL
+  CONTESTADO
+}
+
 model Pedido {
   id                 String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   clienteId          String @db.Uuid
@@ -75,6 +91,10 @@ model Pedido {
   status             StatusPedido @default(PEDIDO_RECEBIDO)
   subtotalCentavos   Int
   totalCentavos      Int
+  formaPagamento     FormaPagamento?
+  statusPagamento    StatusPagamento @default(PENDENTE)
+  precisaTroco       Boolean?
+  trocoParaCentavos  Int?
   chaveIdempotencia  String @db.Uuid
   requisicaoHash     String @db.Char(64)
   entregaCep         String? @db.VarChar(8)
@@ -88,9 +108,54 @@ model Pedido {
   criadoEm           DateTime @default(now())
   atualizadoEm       DateTime @default(now()) @updatedAt
   itens              ItemPedido[]
+  tentativasPagamento TentativaPagamento[]
 
   @@unique([clienteId, chaveIdempotencia])
   @@index([clienteId, criadoEm(sort: Desc), id(sort: Desc)])
+}
+
+model TentativaPagamento {
+  id                 String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pedidoId           String @db.Uuid
+  pedido             Pedido @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  chaveCliente       String @db.Uuid
+  chaveProvedor      String @unique @db.Uuid
+  requisicaoHash     String @db.Char(64)
+  orderId            String? @unique @db.VarChar(64)
+  statusExterno      String? @db.VarChar(80)
+  detalheExterno     String? @db.VarChar(100)
+  statusLocal        StatusPagamento?
+  metodoExterno      String? @db.VarChar(40)
+  tipoMetodoExterno  String? @db.VarChar(40)
+  reconciliadaEm     DateTime?
+  atualizadaNoProvedor String? @db.VarChar(40)
+  encerrada          Boolean @default(false)
+  envios             Int @default(0)
+  bloqueadaAte       DateTime?
+  codigoErro         String? @db.VarChar(80)
+  qrCode             String?
+  qrCodeBase64       String?
+  ticketUrl          String?
+  criadoEm           DateTime @default(now())
+  atualizadoEm       DateTime @default(now()) @updatedAt
+
+  @@unique([pedidoId, chaveCliente])
+  @@index([pedidoId, criadoEm])
+}
+
+// Apenas identificadores autenticados e diagnóstico seguro; nunca o payload recebido.
+model WebhookOrder {
+  id                String @id @db.Char(64)
+  orderId           String @db.VarChar(64)
+  criadoEm          DateTime @default(now())
+  processadoEm      DateTime?
+  proximaExecucaoEm DateTime @default(now())
+  reservaToken      String? @db.Uuid
+  reservadaAte      DateTime?
+  tentativas        Int @default(0)
+  codigoErro        String? @db.VarChar(80)
+
+  @@index([processadoEm, proximaExecucaoEm])
 }
 
 model ItemPedido {

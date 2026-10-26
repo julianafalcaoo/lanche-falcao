@@ -10,6 +10,7 @@ export interface DeliveryAddress {
   reference: string;
 }
 export type AddressErrors = Partial<Record<keyof DeliveryAddress, string>>;
-export type CheckoutSelection =
+import type { PaymentSelection } from "../lib/payment";
+export type CheckoutSelection = (
   | { orderType: "pickup" }
-  | { orderType: "delivery"; address: DeliveryAddress };
+  | { orderType: "delivery"; address: DeliveryAddress }) & PaymentSelection;

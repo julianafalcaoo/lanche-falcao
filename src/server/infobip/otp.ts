@@ -13,6 +13,7 @@ const errors = {
   DESAFIO_INVALIDO: [404, "Desafio de verificação inválido."],
   VERIFICACAO_RECUSADA: [422, "Não foi possível validar este código."],
   TELEFONE_INVALIDO: [422, "Informe um telefone brasileiro válido com DDD."],
+  TELEFONE_NAO_PERMITIDO: [403, "Telefone não autorizado neste ambiente de testes."],
   PIN_ID_INVALIDO: [400, "Informe um pinId válido."],
   CODIGO_INVALIDO: [400, "Informe o código como texto com exatamente quatro dígitos."],
   JSON_INVALIDO: [400, "Envie um objeto JSON válido."],

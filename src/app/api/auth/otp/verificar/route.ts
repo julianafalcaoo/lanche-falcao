@@ -4,6 +4,7 @@ import { readSessionToken, sessionCookie } from "../../../../../server/auth/sess
 import { otpBody, otpJson } from "../../../../../server/infobip/http.ts";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {

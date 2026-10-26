@@ -11,7 +11,7 @@ import { parsePedido } from "../src/server/pedidos/validation.ts";
 const database = new URL(process.env.DATABASE_URL).pathname.slice(1);
 if (!/^lf_auth_test_[a-f0-9]{24}$/.test(database) || database !== process.env.AUTH_TEST_DATABASE) throw new Error("Use o runner de banco descartável.");
 let a, b;
-const pickup = { tipo: "RETIRADA", itens: [{ productId: "coxinha-frango", quantity: 2 }] };
+const pickup = { tipo: "RETIRADA", formaPagamento: "PIX", itens: [{ productId: "coxinha-frango", quantity: 2 }] };
 const address = { postalCode: "69000-000", street: " Rua de teste ", number: "10", neighborhood: "Centro", city: "Manaus", state: "am", complement: "", reference: "Próximo à praça" };
 const delivery = { ...pickup, tipo: "ENTREGA", endereco: address };
 async function fixture(telefone) {
@@ -65,7 +65,7 @@ test("retirada autenticada cria snapshots reais, status inicial e centavos intei
 });
 
 test("múltiplos produtos somam subtotais e total sem taxa ou desconto", async () => {
-  const pedido = await created({ tipo: "RETIRADA", itens: [{ productId: "coxinha-frango", quantity: 2 }, { productId: "pepsi-lata", quantity: 3 }] });
+  const pedido = await created({ ...pickup, itens: [{ productId: "coxinha-frango", quantity: 2 }, { productId: "pepsi-lata", quantity: 3 }] });
   assert.equal(pedido.subtotalCentavos, 2300);
   assert.equal(pedido.totalCentavos, 2300);
   assert.deepEqual(pedido.itens.map((item) => item.subtotalCentavos), [800, 1500]);
@@ -272,4 +272,75 @@ test("constraints de dinheiro, quantidade, endereço e status/tipo protegem o ba
   await assert.rejects(prisma.itemPedido.update({ where: { id: item.id }, data: { quantidade: 0 } }));
   await assert.rejects(prisma.itemPedido.update({ where: { id: item.id }, data: { subtotalCentavos: 1 } }));
   await assert.rejects(prisma.cliente.delete({ where: { id: a.id } }));
+});
+for (const payment of [
+  { formaPagamento: "PIX" },
+  { formaPagamento: "CARTAO" },
+  { formaPagamento: "DINHEIRO", precisaTroco: false },
+  { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 800 },
+  { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 2000 },
+]) {
+  test(`pagamento persistido e consultável: ${JSON.stringify(payment)}`, async () => {
+    const body = { ...pickup, ...payment };
+    const key = randomUUID();
+    const pedido = await created(body, key);
+    assert.equal(pedido.formaPagamento, payment.formaPagamento);
+    assert.equal(pedido.statusPagamento, "PENDENTE");
+    assert.equal(pedido.precisaTroco, payment.precisaTroco ?? null);
+    assert.equal(pedido.trocoParaCentavos, payment.trocoParaCentavos ?? null);
+    assert.deepEqual((await (await get(pedido.id)).json()).pedido, pedido);
+    assert.deepEqual((await (await listing()).json()).pedidos, [pedido]);
+    assert.equal((await get(pedido.id, b.cookie)).status, 404);
+    assert.equal((await post(body, key)).status, 200);
+    assert.equal(await prisma.pedido.count(), 1);
+  });
+}
+for (const payment of [
+  { formaPagamento: undefined }, { formaPagamento: null }, { formaPagamento: "BOLETO" },
+  { formaPagamento: "PIX", precisaTroco: false }, { formaPagamento: "PIX", trocoParaCentavos: null },
+  { formaPagamento: "CARTAO", precisaTroco: true }, { formaPagamento: "CARTAO", trocoParaCentavos: 2000 },
+  { formaPagamento: "DINHEIRO" }, { formaPagamento: "DINHEIRO", precisaTroco: "true" },
+  { formaPagamento: "DINHEIRO", precisaTroco: false, trocoParaCentavos: 2000 },
+  ...[undefined, null, 0, -1, 799, 1.5, "2000", 2147483648].map(trocoParaCentavos => ({ formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos })),
+  ...["PENDENTE", "APROVADO", "RECUSADO", "CANCELADO"].map(statusPagamento => ({ formaPagamento: "PIX", statusPagamento })),
+]) {
+  test(`pagamento inválido não cria pedido: ${JSON.stringify(payment)}`, async () => {
+    assert.equal((await post({ ...pickup, ...payment })).status, 422);
+    await empty();
+  });
+}
+test("idempotência inclui forma e troco; ausência e null sem troco são equivalentes", async () => {
+  const key = randomUUID();
+  const body = { ...pickup, formaPagamento: "DINHEIRO", precisaTroco: false };
+  await created(body, key);
+  assert.equal((await post({ ...body, trocoParaCentavos: null }, key)).status, 200);
+  assert.equal((await post(pickup, key)).status, 409);
+  assert.equal((await post({ ...body, precisaTroco: true, trocoParaCentavos: 2000 }, key)).status, 409);
+  const cashKey = randomUUID();
+  await created({ ...body, precisaTroco: true, trocoParaCentavos: 2000 }, cashKey);
+  assert.equal((await post({ ...body, precisaTroco: true, trocoParaCentavos: 3000 }, cashKey)).status, 409);
+});
+test("troco usa total real; retry preserva snapshot após mudança de preço", async (t) => {
+  const body = { ...pickup, formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 800 };
+  assert.equal((await post({ ...body, trocoParaCentavos: 400, totalCentavos: 400 })).status, 422);
+  const key = randomUUID();
+  const pedido = await created(body, key);
+  const product = products.find(item => item.id === "coxinha-frango");
+  const price = product.priceInCents;
+  t.after(() => { product.priceInCents = price; });
+  product.priceInCents = 500;
+  assert.deepEqual((await (await post(body, key)).json()).pedido, pedido);
+  assert.equal((await post(body)).status, 422);
+});
+test("CHECK de pagamento protege combinações inválidas e permite legado sem forma", async () => {
+  const pedido = await created();
+  for (const data of [
+    { precisaTroco: false }, { trocoParaCentavos: 2000 },
+    { formaPagamento: "DINHEIRO", precisaTroco: null },
+    { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: null },
+    { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 799 },
+    { formaPagamento: null, precisaTroco: true, trocoParaCentavos: 2000 },
+  ]) await assert.rejects(prisma.pedido.update({ where: { id: pedido.id }, data }));
+  await prisma.pedido.update({ where: { id: pedido.id }, data: { formaPagamento: null } });
+  assert.equal((await (await get(pedido.id)).json()).pedido.formaPagamento, null);
 });

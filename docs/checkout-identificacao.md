@@ -1,4 +1,4 @@
-# Identificação no checkout
+﻿# Identificação no checkout
 
 O checkout consulta `GET /api/auth/me` ao entrar, sem exibir o formulário enquanto a sessão é desconhecida. Falhas mostram uma ação de tentar novamente; 401 abre Nome/Celular; sessão válida mostra o cliente identificado.
 
@@ -10,7 +10,7 @@ Há bloqueio imediato de submissões duplicadas e mensagens amigáveis para cód
 
 `useCheckoutDraft` permanece separado e preserva Retirada/Entrega e endereço em sessionStorage. Carrinho mantém a persistência existente. Sair chama logout e não apaga nenhum desses dados.
 
-Continuar exige cliente identificado, carrinho com itens, tipo escolhido e endereço válido para Entrega. Por enquanto mostra apenas que a próxima etapa será pagamento; não cria pedido, navega para pagamento ou limpa dados.
+Finalizar pedido exige cliente identificado, carrinho com itens, tipo escolhido, endereço válido para Entrega e forma de pagamento válida. O fluxo atual cria Pedido e segue para pagamento de teste conforme [Mercado Pago / Orders](./mercado-pago.md). A autenticação permanece independente dessa integração.
 
 Estilos em `customer-identification.module.css`, com um ajuste de botão desabilitado no módulo existente do checkout. Nenhum estilo adicionado ao globals.css.
 
