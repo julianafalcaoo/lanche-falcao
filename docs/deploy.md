@@ -77,7 +77,7 @@ Cadastre valores no painel, por projeto/escopo. Nenhum segredo existente foi cop
 | MERCADO_PAGO_PUBLIC_KEY | Credencial pública de teste; fornecida apenas pela rota autenticada |
 | MERCADO_PAGO_WEBHOOK_SECRET | Assinatura secreta do webhook da aplicação de teste |
 | MERCADO_PAGO_RECONCILIACAO_SECRET | Segredo independente para POST do agendador externo |
-| CRON_SECRET | Segredo independente para GET do Vercel Cron, caso escolhido |
+| CRON_SECRET | Obrigatório para o GET do Vercel Cron diário configurado; segredo aleatório independente |
 
 VERCEL, VERCEL_ENV e NODE_ENV são variáveis da plataforma: não cadastrar manualmente para forçar comportamento. Não definir NODE_ENV=development na hospedagem para tentar habilitar testes.
 
@@ -138,28 +138,40 @@ Pix usa fixture de pagador de teste; cartão usa Brick e dados oficiais de teste
 
 ## 7. Agendador de reconciliação
 
-Nenhum cron foi ativado no vercel.json. Escolher uma das opções manualmente:
+O vercel.json já configura um cron diário compatível com Hobby. Ele só será ativado após um deployment feito pelo responsável; esta preparação não faz deploy nem altera o banco remoto.
 
 - Agendador externo: POST /api/interno/pagamentos/reconciliar, Authorization Bearer correspondente a MERCADO_PAGO_RECONCILIACAO_SECRET.
 - Vercel Cron: GET da mesma rota, com CRON_SECRET. A plataforma envia esse segredo no header automaticamente. O segredo de POST não autoriza GET e vice-versa.
 
 Nos dois casos, não usar cookie, Origin, query string ou User-Agent como autenticação. O endpoint retorna no-store e falha fechado sem segredo. Não usar um GET público de health check para disparar reconciliação.
 
-A frequência recomendada para o lote atual é um minuto durante testes ativos, dimensionando conforme volume. Vercel Hobby permite apenas cron diário e não atende essa cadência. Avaliar um agendador externo existente com POST/headers, ou plano que suporte a frequência, sem contratar automaticamente. Cron nativo só roda em deployments Production da Vercel, não em Preview; isso independe de o projeto dedicado ser de homologação comercial.
+O cron configurado roda uma vez por dia às 08:00 UTC, equivalente a 04:00 em Manaus (UTC−4). No Hobby, a precisão é por hora: pode ocorrer entre 04:00 e 04:59 em Manaus. Não há garantia de minuto exato. Cron nativo só roda em deployments Production da Vercel, não em Preview; isso independe de o projeto dedicado ser de homologação comercial. Ver [limites oficiais](https://vercel.com/docs/cron-jobs/usage-and-pricing) e [fuso UTC](https://vercel.com/docs/cron-jobs).
 
-Se o plano permitir, adicionar manualmente ao vercel.json depois da configuração do segredo:
+Configuração já incluída no arquivo (manter as demais opções de build):
 
 ```json
 {
   "crons": [
-    { "path": "/api/interno/pagamentos/reconciliar", "schedule": "* * * * *" }
+    { "path": "/api/interno/pagamentos/reconciliar", "schedule": "0 8 * * *" }
   ]
 }
 ```
 
-Mesclar esse trecho com as opções existentes, sem sobrescrever o arquivo inteiro. Não aplicar esse cron minutely num plano Hobby. Cron diário pode servir para diagnóstico de baixíssimo volume, mas não é reconciliação contínua de pagamentos.
+Passos manuais na Vercel:
+
+1. Gerar um segredo independente com node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))" e cadastrar como CRON_SECRET no escopo Production. Não usar NEXT_PUBLIC_, segredo de webhook nem o segredo do POST.
+2. Manter DATABASE_URL pooled/TLS do Neon, MERCADO_PAGO_AMBIENTE=test, MERCADO_PAGO_ACCESS_TOKEN e MERCADO_PAGO_PUBLIC_KEY de teste. DIRECT_URL não é usada pelo cron; MERCADO_PAGO_WEBHOOK_SECRET continua necessário para a rota de webhook. MERCADO_PAGO_RECONCILIACAO_SECRET só é necessário se também usar o agendador externo por POST.
+3. Confirmar Fluid Compute e suporte aos 120s declarados na rota. Publicar manualmente a versão revisada; nenhuma migration é necessária para esta alteração.
+4. Conferir no painel Cron Jobs o path e a expressão diária. A Vercel envia Authorization: Bearer com CRON_SECRET automaticamente. Verificar que Deployment Protection permite a execução pelo cron sem tornar a rota pública sem autenticação.
+5. Acompanhar a primeira execução nos logs e seu retorno JSON. Uma execução manual pelo painel também executa reconciliação e pode atualizar estados; fazê-la conscientemente, apenas no ambiente de teste. Nunca publicar headers, segredos ou payloads completos nos logs.
+
+Sem segredo, a rota retorna 503; Bearer ausente/incorreto retorna 401, incluindo cookies, query string e User-Agent tentando substituí-lo. Falha de infraestrutura retorna 503 sanitizado. Respostas têm Cache-Control: no-store. Não há endpoint público de diagnóstico que execute o lote.
+
+O cron diário é uma recuperação complementar de baixíssimo volume; o webhook continua sendo o caminho principal. Não garante atualização imediata nem varredura completa de todos os pagamentos em um dia. Com lotes de duas tentativas e duas notificações, o atraso cresce conforme o histórico e a fila. Para maior volume/cadência, avaliar separadamente um agendador externo ou plano apropriado, sem adicionar cron por minuto ao Hobby.
 
 O lote processa até duas tentativas e duas notificações. Busca de resposta perdida pode fazer duas consultas por tentativa; o limite foi reduzido para caber melhor nos 120s declarados. Respostas pagas também são consultadas para detectar estorno/contestação. Eventos com falha permanecem na fila com backoff; a plataforma não garante retries do cron. Monitorar falhas, atraso da fila, reservas vencidas e quotas. Sob carga, será necessário dimensionar lotes/filas; timers dentro de função não resolvem isso.
+
+A seleção inclui tentativas pendentes e encerradas com Order vinculada. A consulta autenticada GET /v1/orders/{id}, validação de vínculo/valor/método e regras de transição existentes determinam o estado: pendente, aprovado, recusado, cancelado/expirado, estornado, estornado parcial e contestado. Nenhuma aprovação é inferida apenas de dados locais ou do corpo do webhook. Respostas perdidas são recuperadas por busca, sem criar cobrança. Locks, reservas, fencing, chaves de idempotência e índice de tentativa ativa foram preservados. Erros individuais ficam em codigoErro e podem coexistir com HTTP 200 do lote; isso significa que o lote terminou, não que todos os pagamentos foram reconciliados. Conferir esses erros e a fila, além do status HTTP.
 
 ## 8. Checklist antes de liberar homologação
 

@@ -19,7 +19,8 @@ test("Node 24 padronizado e build não executa migrations",()=>{
   const pkg=JSON.parse(readFileSync("package.json","utf8"));
   assert.equal(pkg.engines.node,"24.x");assert.equal(readFileSync(".nvmrc","utf8").trim(),"24");
   assert.equal(pkg.scripts.build,"prisma generate && next build");
-  const config=JSON.parse(readFileSync("vercel.json","utf8"));assert.equal(config.crons,undefined);
+  const config=JSON.parse(readFileSync("vercel.json","utf8"));
+  assert.deepEqual(config.crons,[{path:"/api/interno/pagamentos/reconciliar",schedule:"0 8 * * *"}]);
 });
 test("pool de produção é pequeno e mantém TLS sem overrides inseguros",t=>{
   env(t,"NODE_ENV","production");const options=databaseOptions();
@@ -64,6 +65,10 @@ test("cookie de homologação usa flags de produção e prefixo Host",t=>{
 test("cron GET falha fechado, não aceita o segredo do POST",async t=>{
   assert.equal((await GET(new Request("https://app.invalid/api/cron"))).status,503);
   env(t,"CRON_SECRET","unit-cron");env(t,"MERCADO_PAGO_RECONCILIACAO_SECRET","unit-post");
+  for(const headers of [{},{authorization:"Bearer invalid"},{cookie:"CRON_SECRET=unit-cron",origin:"https://app.invalid","user-agent":"vercel-cron/1.0"}]){
+    const response=await GET(new Request("https://app.invalid/api/cron?secret=unit-cron",{headers}));
+    assert.equal(response.status,401);assert.equal(response.headers.get("cache-control"),"no-store");
+  }
   assert.equal((await GET(new Request("https://app.invalid/api/cron",{headers:{authorization:"Bearer unit-post"}}))).status,401);
   assert.equal((await POST(new Request("https://app.invalid/api/cron",{method:"POST",headers:{authorization:"Bearer unit-cron"}}))).status,401);
 });

@@ -11,7 +11,7 @@ const { receiveOrderWebhook, processOrderWebhook } = await import("../src/server
 const { reconcileAttempt, applyOrderSnapshot } = await import("../src/server/mercado-pago/reconciliation.ts");
 const { processPayment, paymentView } = await import("../src/server/mercado-pago/service.ts");
 const { reconciliationBatch } = await import("../src/server/mercado-pago/worker.ts");
-const { POST: cron } = await import("../src/app/api/interno/pagamentos/reconciliar/route.ts");
+const { POST: cron, GET: dailyCron } = await import("../src/app/api/interno/pagamentos/reconciliar/route.ts");
 const orderId = "ORD01JP84C939T20S0P1DN382FQ6K";
 const secret = "unit-test-signature-secret";
 let memory, pedido, attempt, remote, calls, jobs;
@@ -33,9 +33,10 @@ function state(status, detail) {
 }
 const storedOrder = () => memory.rows("pedido")[0];
 const storedAttempt = () => memory.rows("tentativaPagamento").find(row => row.id === attempt.id);
+const runDailyCron = () => dailyCron(new Request("http://localhost/api/interno/pagamentos/reconciliar", { headers: { authorization: "Bearer unit-daily-cron" } }));
 
 beforeEach(t => {
-  for (const [key, value] of Object.entries({ MERCADO_PAGO_AMBIENTE: "test", MERCADO_PAGO_ACCESS_TOKEN: "unit-access", MERCADO_PAGO_PUBLIC_KEY: "unit-public", MERCADO_PAGO_WEBHOOK_SECRET: secret, MERCADO_PAGO_RECONCILIACAO_SECRET: "unit-worker" })) {
+  for (const [key, value] of Object.entries({ CRON_SECRET: "unit-daily-cron", MERCADO_PAGO_AMBIENTE: "test", MERCADO_PAGO_ACCESS_TOKEN: "unit-access", MERCADO_PAGO_PUBLIC_KEY: "unit-public", MERCADO_PAGO_WEBHOOK_SECRET: secret, MERCADO_PAGO_RECONCILIACAO_SECRET: "unit-worker" })) {
     const previous = process.env[key]; process.env[key] = value;
     t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
   }
@@ -272,6 +273,69 @@ test("worker recupera resposta perdida por busca e depois processa webhook desco
   assert.equal(storedAttempt().orderId, orderId); assert.equal(storedOrder().statusPagamento, "APROVADO");
   assert.ok(memory.rows("webhookOrder")[0].processadoEm);
 });
+test("cron GET aprova pendente somente após consultar a Order e repetição não cria cobrança", async () => {
+  assert.equal(storedOrder().statusPagamento, "PENDENTE");
+  const first = await runDailyCron();
+  assert.equal(first.status, 200);assert.equal(first.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await first.json(), { tentativasConsultadas: 1, notificacoesSelecionadas: 0 });
+  assert.equal(calls.length, 1);assert.equal(storedOrder().statusPagamento, "APROVADO");
+  assert.equal((await runDailyCron()).status, 200);assert.equal(calls.length, 1);
+  assert.equal(memory.rows("tentativaPagamento").length, 1);
+});
+
+for (const [status, detail, expected] of [
+  ["action_required", "waiting_transfer", "PENDENTE"],
+  ["failed", "expired", "CANCELADO"],
+  ["canceled", "canceled", "CANCELADO"],
+  ["refunded", "refunded", "ESTORNADO"],
+  ["processed", "partially_refunded", "ESTORNADO_PARCIAL"],
+  ["charged_back", "in_process", "CONTESTADO"],
+]) test(`cron GET reconcilia estado remoto ${status}/${detail}`, async () => {
+  if (["ESTORNADO", "ESTORNADO_PARCIAL", "CONTESTADO"].includes(expected)) {
+    await reconcileAttempt(attempt.id);
+    await prisma.tentativaPagamento.update({ where: { id: attempt.id }, data: { reconciliadaEm: new Date(0) } });
+    calls.length = 0;
+  }
+  state(status, detail);
+  assert.equal((await runDailyCron()).status, 200);assert.equal(calls.length, 1);
+  assert.equal(storedOrder().statusPagamento, expected);assert.equal(storedAttempt().statusLocal, expected);
+});
+
+test("cron GET com consulta recusada preserva pendente e registra falha para recuperação", async t => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({}, { status: 401 }));
+  assert.equal((await runDailyCron()).status, 200);
+  assert.equal(storedOrder().statusPagamento, "PENDENTE");
+  assert.equal(storedAttempt().codigoErro, "CREDENCIAL_RECUSADA");assert.ok(storedAttempt().bloqueadaAte > new Date());
+});
+
+test("cron GET com falha de infraestrutura retorna 503 sem diagnóstico privado", async t => {
+  const original = prisma.tentativaPagamento.findMany;
+  prisma.tentativaPagamento.findMany = t.mock.fn(async () => { throw new Error("private database detail"); });
+  t.after(() => { prisma.tentativaPagamento.findMany = original; });
+  const response = await runDailyCron();assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { erro: "RECONCILIACAO_INDISPONIVEL" });assert.equal(calls.length, 0);
+});
+
+test("cron GET concorrente respeita reserva de tentativa sem segunda consulta", async t => {
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  t.mock.method(globalThis, "fetch", async (url, init) => { calls.push({ url, init });assert.equal(init.method, undefined);entered();await gate;return Response.json(remote); });
+  const first = runDailyCron();await started;
+  try { assert.equal((await runDailyCron()).status, 200);assert.equal(calls.length, 1); }
+  finally { release(); }
+  assert.equal((await first).status, 200);assert.equal(storedOrder().statusPagamento, "APROVADO");
+});
+
+test("cron GET recupera notificação persistida sem execução após ACK", async () => {
+  await receive(notification());jobs = [];
+  assert.equal(memory.rows("webhookOrder")[0].processadoEm, null);
+  assert.equal((await runDailyCron()).status, 200);
+  assert.ok(memory.rows("webhookOrder")[0].processadoEm);
+  assert.equal(memory.rows("webhookOrder")[0].codigoErro, null);
+  assert.equal(storedOrder().statusPagamento, "APROVADO");
+});
+
 test("duplo clique de criação continua gerando uma só cobrança e uma só chave", async t => {
   memory.remove("tentativaPagamento", attempt.id);
   t.mock.method(globalThis, "fetch", async (url, init) => { calls.push({ url, init }); return Response.json(remote); });
