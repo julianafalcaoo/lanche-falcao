@@ -5,6 +5,7 @@ import { normalizarTelefoneBrasileiro } from "../../lib/telefone.ts";
 import { solicitarOtp, verificarOtp, OtpError } from "../infobip/otp.ts";
 import { newToken, tokenHash, SESSION_SECONDS } from "./session.ts";
 import { assertOtpAccess } from "./otp-access.ts";
+import { reserveOtpQuota } from "./otp-rate-limit.ts";
 
 export class AuthError extends Error {
   readonly status: number;
@@ -16,13 +17,14 @@ export class AuthError extends Error {
   }
 }
 
-export async function solicitarDesafio(nome: unknown, value: unknown) {
+export async function solicitarDesafio(nome: unknown, value: unknown, request?: Request) {
   if (typeof nome !== "string" || !nome.trim() || nome.trim().length > 100 || /[\x00-\x1f\x7f]/.test(nome)) {
     throw new AuthError("NOME_INVALIDO", 422, "Informe um nome entre 1 e 100 caracteres.");
   }
   const telefone = normalizarTelefoneBrasileiro(value);
   if (!telefone) throw new OtpError("TELEFONE_INVALIDO");
   assertOtpAccess(telefone);
+  await reserveOtpQuota(telefone, request);
   const expiraEm = new Date(Date.now() + 5 * 60 * 1000);
   const { pinId } = await solicitarOtp(telefone);
   const desafioId = randomBytes(32).toString("hex");

@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   try {
     protectMutation(request);
     const body = await otpBody(request);
-    return otpJson(await solicitarDesafio(body.nome, body.telefone));
+    return otpJson(await solicitarDesafio(body.nome, body.telefone, request));
   } catch (error) {
     return authFailure(error);
   }

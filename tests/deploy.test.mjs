@@ -41,9 +41,11 @@ test("runtime ignora DIRECT_URL e usa somente DATABASE_URL",t=>{
   env(t,"DIRECT_URL","postgresql://different.invalid/migrations");
   assert.equal(databaseOptions().connectionString,process.env.DATABASE_URL);
 });
-test("OTP hospedado sem allowlist falha antes de enviar SMS",async t=>{
+test("OTP hospedado sem allowlist permite telefone, mas exige proteção de cota",async t=>{
   env(t,"VERCEL","1");
-  await assert.rejects(solicitarDesafio("Teste","92999999999"),{code:"CONFIGURACAO_OTP_INVALIDA"});
+  env(t,"OTP_RATE_LIMIT_SECRET",undefined);
+  assert.doesNotThrow(()=>assertOtpAccess("+5592999999999"));
+  await assert.rejects(solicitarDesafio("Teste","92999999999"),{status:503});
   assert.equal(fetch.mock.callCount(),0);
 });
 test("allowlist normaliza telefone e recusa outros destinatários",t=>{

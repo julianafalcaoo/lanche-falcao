@@ -9,6 +9,14 @@ datasource db {
   provider = "postgresql"
 }
 
+model LimiteOtp {
+  chave      String   @id @db.Char(64)
+  quantidade Int
+  expiraEm   DateTime
+
+  @@index([expiraEm])
+}
+
 model Cliente {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   nome               String

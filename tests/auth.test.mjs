@@ -16,6 +16,7 @@ const telefone = "+5592999999999";
 Object.assign(process.env, {
   INFOBIP_API_BASE_URL: "https://unit-test.api.infobip.com", INFOBIP_API_KEY: "fake-test-key",
   INFOBIP_2FA_APPLICATION_ID: "test-app", INFOBIP_2FA_MESSAGE_ID: "test-message",
+  OTP_RATE_LIMIT_SECRET: "test-only-secret-with-at-least-32-characters",
 });
 let sentPin;
 beforeEach(async (t) => {
@@ -27,6 +28,7 @@ beforeEach(async (t) => {
   await prisma.sessao.deleteMany();
   await prisma.desafioOtp.deleteMany();
   await prisma.cliente.deleteMany();
+  await prisma.limiteOtp.deleteMany();
 });
 after(async () => { await prisma.$disconnect(); });
 function request(body, cookie, overrides = {}) {
@@ -37,6 +39,8 @@ function request(body, cookie, overrides = {}) {
 }
 const getRequest = (cookie) => new Request("http://localhost/api/auth/me", { headers: cookie ? { cookie } : {} });
 async function challenge(nome = "  Maria  ") {
+  // Estes testes exercitam sessões; simular espera entre solicitações legítimas.
+  await prisma.limiteOtp.updateMany({ data: { expiraEm: new Date(0) } });
   const response = await solicitar(request({ nome, telefone: "(92) 99999-9999" }));
   assert.equal(response.status, 200);
   const body = await response.json();

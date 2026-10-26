@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { prisma } from "../src/lib/prisma.ts";
 
 const suite = process.argv[2] ?? "auth";
-if (!["auth", "pedidos", "mercado-pago", "webhook-postgres"].includes(suite)) throw new Error("Suíte de banco não permitida.");
+if (!["auth", "pedidos", "mercado-pago", "webhook-postgres", "otp-rate-limit"].includes(suite)) throw new Error("Suíte de banco não permitida.");
 const source = new URL(process.env.DATABASE_URL);
 if (!["127.0.0.1", "localhost", "[::1]"].includes(source.hostname) || source.port !== "5433" || source.pathname !== "/lanche_falcao") throw new Error("Runner restrito ao PostgreSQL local de desenvolvimento.");
 const database = `lf_auth_test_${randomBytes(12).toString("hex")}`;

@@ -53,7 +53,7 @@ node --env-file=.env.homologacao.local node_modules/prisma/build/index.js migrat
 node --env-file=.env.homologacao.local node_modules/prisma/build/index.js migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
 ```
 
-Aplicar as seis migrations existentes desde a inicial, sem db push, reset, migrate dev ou edição do histórico. Elas foram testadas em bancos PostgreSQL locais novos; a compatibilidade remota ainda exige validação autorizada. Migrate deploy só altera estrutura e backfills previstos; não importa o banco local. Repetir a aplicação posteriormente não deve gerar novas mudanças. Falha parcial exige investigação, não reset. O rollback do código Vercel não reverte a estrutura do banco: mudanças futuras devem ser compatíveis com a versão anterior.
+Aplicar as sete migrations existentes desde a inicial (incluindo 20261025020000_otp_rate_limit), sem db push, reset, migrate dev ou edição do histórico. Elas foram testadas em bancos PostgreSQL locais novos; a compatibilidade remota ainda exige validação autorizada. Migrate deploy só altera estrutura e backfills previstos; não importa o banco local. Repetir a aplicação posteriormente não deve gerar novas mudanças. Falha parcial exige investigação, não reset. O rollback do código Vercel não reverte a estrutura do banco: mudanças futuras devem ser compatíveis com a versão anterior.
 
 Os scripts test-auth, auditoria local e ensaio de backup são restritos ao PostgreSQL local e não devem ser apontados para Neon. Os runners sobrescrevem também DIRECT_URL no processo filho para não migrar acidentalmente outro banco.
 
@@ -70,7 +70,8 @@ Cadastre valores no painel, por projeto/escopo. Nenhum segredo existente foi cop
 | INFOBIP_API_KEY | Chave exclusivamente server-side da conta de homologação |
 | INFOBIP_2FA_APPLICATION_ID | Aplicação 2FA separada para homologação |
 | INFOBIP_2FA_MESSAGE_ID | Template de quatro dígitos dessa aplicação |
-| INFOBIP_ALLOWED_PHONES | Lista de telefones brasileiros de testadores, separados por vírgula; obrigatória na Vercel |
+| INFOBIP_ALLOWED_PHONES | Opcional: lista de telefones brasileiros permitidos, separados por vírgula. Ausente permite qualquer número brasileiro válido |
+| OTP_RATE_LIMIT_SECRET | Obrigatório para solicitações OTP; segredo aleatório estável de pelo menos 32 caracteres, exclusivo por ambiente |
 | MERCADO_PAGO_AMBIENTE | test; qualquer outro valor bloqueia integração |
 | MERCADO_PAGO_ACCESS_TOKEN | Credencial de teste compatível com Orders, somente servidor |
 | MERCADO_PAGO_PUBLIC_KEY | Credencial pública de teste; fornecida apenas pela rota autenticada |
@@ -97,9 +98,27 @@ Cabeçalhos nosniff, Referrer-Policy e X-Frame-Options foram adicionados. Não s
 
 ## 5. OTP e proteção da homologação
 
-O envio de SMS na Vercel falha fechado sem INFOBIP_ALLOWED_PHONES válido. Apenas números normalizados dessa lista podem receber desafios; no local a lista continua opcional. A verificação OTP e os cookies existentes foram preservados. A lista contém dados pessoais e deve ficar apenas no painel privado.
+A lista INFOBIP_ALLOWED_PHONES é opcional também na Vercel. Ausente ou vazia permite qualquer número brasileiro válido; preenchida continua restritiva e uma lista inválida bloqueia o envio. Isso abre o cadastro, mas SMS Infobip pode gerar custos reais mesmo em homologação.
 
-Isso não substitui rate limiting. Ainda não existe limitador distribuído próprio por IP/telefone. Não abrir cadastro irrestrito ao público. Configurar limites de aplicação/telefone/tentativas na Infobip conforme docs/infobip-2fa.md e avaliar regras de Firewall/rate limiting da Vercel disponíveis no plano. Autenticação por SMS pode gerar custos mesmo em homologação; o agente não enviou SMS e testes reais exigem sua decisão explícita.
+Antes de publicar em um banco novo, aplicar a migration 20261025020000_otp_rate_limit usando prisma migrate deploy no ambiente correto, com a conexão direta. No Neon já configurado neste projeto, ela foi aplicada em etapa autorizada separada: as sete migrations ficaram atualizadas, sem diferenças de schema e com as tabelas anteriores preservadas. Esta é a sétima migration e cria somente LimiteOtp, sem alterar dados existentes. Não usar reset nem db push.
+
+Configure OTP_RATE_LIMIT_SECRET no escopo Production do projeto de homologação. Gere localmente com node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))". Não reutilizar segredo de webhook/cron; manter estável entre instâncias e deployments. A troca muda as identidades dos contadores e reinicia as cotas efetivas: tratar rotação como operação controlada. Não usar NEXT_PUBLIC_. Sem segredo válido, tabela ou banco disponível, a solicitação falha com 503 antes de chamar a Infobip.
+
+Limites conservadores, fixos no código src/server/auth/otp-rate-limit.ts:
+
+| Escopo | Limite |
+| --- | --- |
+| Telefone normalizado | 1 solicitação por 60 segundos e 5 por 24 horas |
+| IP (IPv6 agregado por /64) | 5 por 15 minutos e 20 por 24 horas |
+| Aplicação/banco/segredo compartilhados | 10 por 60 segundos e 100 por 24 horas |
+
+As janelas começam na primeira reserva e expiram pelo relógio do PostgreSQL; não são janelas deslizantes nem dias do calendário. Pode haver rajada na passagem entre janelas. A reserva atômica de todas as cotas ocorre antes da chamada externa, em transação curta com UPSERT condicional e locks de linha. Recusas revertem todas as cotas daquela solicitação. Falhas e timeouts após reserva consomem cota, sem retry automático nem devolução, pois o SMS pode ter sido enviado. Excesso retorna 429, no-store e Retry-After conservador correspondente à duração da janela.
+
+Na Vercel direta, usa-se apenas x-forwarded-for, sobrescrito pelo proxy da plataforma, exigindo um único IP válido. Não há fallback para headers enviados pelo cliente. Não hospedar este código fora da Vercel apenas definindo VERCEL=1; outro proxy exige uma política explícita de confiança. Atrás de proxy externo, o limite pode agrupar clientes pelo IP do proxy. Localmente, todos compartilham a identidade local, sem confiar em headers arbitrários. Ver [headers oficiais da Vercel](https://vercel.com/docs/headers/request-headers).
+
+Os contadores guardam HMAC-SHA256 de escopo e identidade, quantidade e expiração; não armazenam IP ou telefone em claro nessa tabela. Desafios existentes continuam armazenando o telefone necessário ao login. Não há limpeza automática dos contadores vencidos: o índice expiraEm permite planejar retenção posterior, sem apagar dados nesta implementação. Contadores de identidades conhecidas são reutilizados.
+
+Manter os limites Infobip documentados em docs/infobip-2fa.md, inclusive cinco tentativas, cinco minutos e uso único; os controles do provedor continuam necessários. Configurar quotas, alertas e limites de gastos no provedor e considerar Firewall/CAPTCHA para ataques distribuídos. O teto global reduz envios da aplicação, mas não é um teto monetário contratual e pode ser esgotado por um atacante, indisponibilizando OTP a clientes legítimos. Outros emissores que usem a mesma conta não passam por estes contadores. Nenhum SMS real foi enviado nesta implementação.
 
 Deployment Protection pode restringir a navegação aos testadores, mas também bloquear o webhook antes de chegar ao handler. Não declarar homologação completa enquanto o Mercado Pago receber a tela de autenticação da Vercel. Conferir opções de exceção por rota/domínio no plano; não desligar toda proteção sem avaliar a exposição. Se o plano não permitir disponibilizar o callback de forma apropriada, deixar essa etapa pendente. Não colocar segredo de bypass em URL de webhook: isso pode aparecer em logs e painéis. Para agendador que suporta headers, o bypass de plataforma e o Bearer da aplicação são autorizações distintas.
 
@@ -148,7 +167,7 @@ O lote processa até duas tentativas e duas notificações. Busca de resposta pe
 - Auditoria de dependências sem bloqueios críticos conhecidos; repetir na data de publicação.
 - Banco vazio de homologação com migrations aplicadas por conexão direta e schema conferido.
 - DATABASE_URL pooled/TLS, role correta e pool pequeno; nenhum dado local importado.
-- Somente destinatários autorizados no OTP, limites Infobip e controle de acesso/abuso verificados.
+- Migration de cotas OTP aplicada, OTP_RATE_LIMIT_SECRET estável e limites Infobip/abuso verificados; allowlist opcional conforme público desejado.
 - Cookies seguros e Origin funcionando no domínio HTTPS.
 - Webhook alcançável pelo provedor sem relaxar HMAC e sem segredos em URLs.
 - Agendador autenticado e cadência compatível com o plano.
@@ -159,7 +178,7 @@ O lote processa até duas tentativas e duas notificações. Busca de resposta pe
 
 Não basta trocar MERCADO_PAGO_AMBIENTE: valores diferentes de test são recusados. Também permanecem fixtures de pagador, validação de e-mails de teste, rejeição de live_mode=true e falta de homologação real de cartão/3DS. Esses bloqueios não foram removidos.
 
-Antes de produção, implementar/validar pagador real, política de credenciais/contas, 3DS, operação de estornos/contestações, tratamento de pagamentos excepcionais, suporte operacional e limites distribuídos de abuso. Planejar retenção e limpeza de desafios, sessões e fila, monitoramento, recuperação/backup e política de privacidade. A allowlist de SMS precisa ser substituída conscientemente por controles adequados de acesso público, não simplesmente apagada.
+Antes de produção, implementar/validar pagador real, política de credenciais/contas, 3DS, operação de estornos/contestações, tratamento de pagamentos excepcionais, suporte operacional e homologar os limites distribuídos de abuso e gastos sob carga. Planejar retenção e limpeza de desafios, sessões e fila, monitoramento, recuperação/backup e política de privacidade. A allowlist de SMS agora é opcional, com cotas persistentes obrigatórias antes dos envios.
 
 Vercel Hobby é para uso pessoal não comercial; validar elegibilidade/plano antes de operar uma lanchonete comercialmente. Avaliar também limites/custos Neon, SMS e agendador. Nenhum plano pago foi criado ou contratado.
 
@@ -178,3 +197,9 @@ Validação desta preparação: Node 24.22.1 portátil local, 299 testes aprovad
 - [Notificações Mercado Pago Orders](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/notifications)
 
 Versões e limites foram consultados nesta preparação e devem ser reconferidos no painel antes de publicar. Os testes locais não comprovam conectividade, quotas, permissões ou entrega de callbacks no serviço remoto.
+
+## Validação da abertura de cadastro OTP
+
+A nova migration foi testada em bancos descartáveis PostgreSQL locais e, posteriormente, aplicada no Neon em etapa autorizada separada, sem executar a suíte de testes no banco remoto. A suíte test:otp-rate-limit exercita persistência por outro Prisma Client, concorrência de telefone/IP, cotas globais/diárias, expiração, rollback de reservas recusadas, ausência de segredo/IP, falha de banco e timeout de envio. Fetch é simulado: nenhum SMS real. O runner mantém sua proteção contra destinos remotos; não executar npm test apontando para Neon. Usar ambiente local isolado para os testes de banco.
+
+Validação desta alteração: 12 testes novos de cotas, 16 de autenticação e 41 de OTP/configuração aprovados (69 no total), além de ESLint, TypeScript e npm run build. Build com configuração sintética e credenciais externas vazias. Integração de rede com Vercel/Neon/Infobip e envio real de SMS não foram exercitados.
