@@ -17,8 +17,12 @@ Orders também pode usar APP_USR em teste. Confirmar no painel o ambiente e que 
 duas chaves pertencem à mesma aplicação e conta vendedora. Nunca usar somente o
 prefixo como prova de produção nem expor Access Token no frontend/logs.
 
-Respostas de produção exigem `live_mode: true`; em teste aceitam `false` ou campo
-ausente por compatibilidade com as respostas de teste existentes. Tipos inválidos
+Orders Pix aceitam ausência de `live_mode`, conforme o contrato de criação/consulta.
+Se informado, deve ser `true` em produção e `false` em teste. A ausência não prova
+o ambiente: as consultas continuam autenticadas com as credenciais configuradas,
+e a conta/aplicação correspondente precisa ser conferida na homologação.
+A regra anterior do cartão permanece: produção exige `true`; teste aceita `false`
+ou ausência. A interface, rotas e regras de cartão não foram alteradas. Tipos inválidos
 e respostas de ambiente incompatível são rejeitados. Moeda/país divergentes,
 quando informados, são rejeitados. Uma resposta rejeitada nunca libera preparo
 nem autoriza automaticamente outra cobrança.
@@ -83,7 +87,7 @@ externas vazias no processo, sem editar .env. Build gera Prisma Client, não mig
 ## Pendências para homologação/ativação
 
 - Conferir credenciais/conta/chave Pix, HTTPS e webhook Order de produção.
-- Comprovar live_mode e contratos reais sem enfraquecer validações.
+- Comprovar ambiente/conta e contratos reais, sem exigir live_mode ausente nas Orders Pix.
 - Homologar índices existentes no banco e concorrência em PostgreSQL isolado.
 - Rever cron diário/lotes de dois, alertas de tentativa incerta e recuperação.
 - Cartão: decidir/homologar 3DS e implementar seu fluxo completo caso habilitado

@@ -42,7 +42,9 @@ export function normalizeOrder(value: unknown, pedido: { id: string; totalCentav
   const invalid = () => new ProviderError("RESPOSTA_INVALIDA");
   const production = paymentEnvironment() === "production";
   if (!record(value) || typeof value.id !== "string" || !/^ORD[a-zA-Z0-9]{10,60}$/.test(value.id) || (expectedId && value.id !== expectedId) || value.external_reference !== pedido.id || value.total_amount !== decimalAmount(pedido.totalCentavos) || value.type !== "online" ||
-      (production ? value.live_mode !== true : value.live_mode !== undefined && value.live_mode !== false) ||
+      // Orders Pix não garante live_mode. Se informado, deve corresponder ao ambiente.
+      // A regra existente do cartão permanece intacta, inclusive em produção.
+      (production ? value.live_mode !== true && !(pedido.formaPagamento === "PIX" && value.live_mode === undefined) : value.live_mode !== undefined && value.live_mode !== false) ||
       (value.currency !== undefined && value.currency !== "BRL") || (value.country_code !== undefined && value.country_code !== "BRA") ||
       typeof value.status !== "string" || !/^[a-z_]{1,80}$/.test(value.status) || typeof value.status_detail !== "string" || !/^[a-z_]{1,100}$/.test(value.status_detail)) throw invalid();
   const status = value.status, detail = value.status_detail;

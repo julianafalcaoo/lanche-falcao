@@ -12,6 +12,7 @@ const { sandboxPixInput, sandboxCardEmail } = await import("../src/server/mercad
 const { normalizeOrder } = await import("../src/server/mercado-pago/client.ts");
 const { processPayment, paymentView } = await import("../src/server/mercado-pago/service.ts");
 const { reconcileAttempt } = await import("../src/server/mercado-pago/reconciliation.ts");
+const { reconciliationBatch } = await import("../src/server/mercado-pago/worker.ts");
 const { receiveOrderWebhook } = await import("../src/server/mercado-pago/webhook.ts");
 const { canPrepare } = await import("../src/server/mercado-pago/states.ts");
 const { GET: configRoute } = await import("../src/app/api/pagamentos/config/route.ts");
@@ -22,7 +23,8 @@ const payer = { email: "comprador@dominio.com.br" };
 let memory, pedido, calls, response;
 const orderId = "ORDproduction000000000001";
 function remote(status = "processing", status_detail = "in_process", method = "pix") {
-  return { id: orderId, type: "online", live_mode: true, currency: "BRL", country_code: "BRA", external_reference: pedido.id,
+  // Contrato de Orders Pix: live_mode não é garantido. Não inventar esse campo.
+  return { id: orderId, type: "online", ...(method === "pix" ? {} : { live_mode: true }), currency: "BRL", country_code: "BRA", external_reference: pedido.id,
     total_amount: "8.00", status, status_detail,
     transactions: { payments: [{ amount: "8.00", status, status_detail,
       payment_method: { id: method, type: method === "pix" ? "bank_transfer" : "credit_card" } }] } };
@@ -77,18 +79,105 @@ test("pagador real é obrigatório; fixtures só funcionam em test", () => {
   assert.throws(() => parsePayment({ payer }, "PIX"), { status: 422 });
 });
 
-test("respostas live são exclusivas de produção e valores/vínculo/moeda são validados", () => {
+test("Pix aceita ausência de live_mode e rejeita ambiente explícito incompatível e valores/vínculo/moeda divergentes", () => {
   const approved = remote("processed", "accredited");
   assert.equal(normalizeOrder(approved, pedido).localStatus, "APROVADO");
-  for (const mismatch of [{ live_mode: false }, { live_mode: undefined }, { live_mode: "true" },
+  assert.equal(normalizeOrder({ ...approved, live_mode: true }, pedido).localStatus, "APROVADO");
+  for (const mismatch of [{ live_mode: false }, { live_mode: null }, { live_mode: "true" }, { live_mode: 1 },
     { total_amount: "0.01" }, { external_reference: randomUUID() }, { currency: "USD" }, { country_code: "ARG" }]) {
     assert.throws(() => normalizeOrder({ ...approved, ...mismatch }, pedido));
   }
   process.env.MERCADO_PAGO_AMBIENTE = "test";
-  assert.throws(() => normalizeOrder(approved, pedido));
+  assert.throws(() => normalizeOrder({ ...approved, live_mode: true }, pedido));
   assert.equal(normalizeOrder({ ...approved, live_mode: false }, pedido).localStatus, "APROVADO");
   assert.equal(normalizeOrder({ ...approved, live_mode: undefined }, pedido).localStatus, "APROVADO");
 });
+
+test("cartão mantém exatamente a validação anterior de live_mode em ambos os ambientes", () => {
+  const cardOrder = { ...pedido, formaPagamento: "CARTAO" };
+  const approved = remote("processed", "accredited", "visa");
+  for (const environment of ["test", "production"]) {
+    process.env.MERCADO_PAGO_AMBIENTE = environment;
+    for (const live_mode of [undefined, null, false, true, "true", "false", 0, 1]) {
+      const previousRuleAccepts = environment === "production" ? live_mode === true : live_mode === undefined || live_mode === false;
+      const normalize = () => normalizeOrder({ ...approved, live_mode }, cardOrder);
+      if (previousRuleAccepts) assert.equal(normalize().localStatus, "APROVADO");
+      else assert.throws(normalize, { code: "RESPOSTA_INVALIDA" });
+    }
+  }
+});
+
+test("Pix sem live_mode continua exigindo identificadores, transação única, valores, método e aprovação remota", () => {
+  const approved = remote("processed", "accredited");
+  assert.throws(() => normalizeOrder(approved, pedido, "ORDdifferent000000000001"));
+  for (const mismatch of [{ id: "invalid" }, { type: "other" }, { external_reference: undefined }, { total_amount: "0.01" },
+    { transactions: undefined }, { transactions: { payments: [] } },
+    { transactions: { payments: [approved.transactions.payments[0], approved.transactions.payments[0]] } }]) {
+    assert.throws(() => normalizeOrder({ ...approved, ...mismatch }, pedido), { code: "RESPOSTA_INVALIDA" });
+  }
+  for (const mismatch of [{ amount: "0.01" }, { payment_method: { id: "visa", type: "credit_card" } },
+    { payment_method: { id: "pix", type: "credit_card" } }]) {
+    assert.throws(() => normalizeOrder({ ...approved, transactions: { payments: [{ ...approved.transactions.payments[0], ...mismatch }] } }, pedido));
+  }
+  const unconfirmed = { ...approved, transactions: { payments: [{ ...approved.transactions.payments[0], status: "action_required", status_detail: "waiting_transfer" }] } };
+  assert.equal(normalizeOrder(unconfirmed, pedido).localStatus, "PENDENTE");
+});
+
+test("resposta Pix perdida recupera por busca e GET sem live_mode, sem segunda criação", async t => {
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls.push({ url, init });
+    if (init.method === "POST") throw new Error("Resposta de criação perdida");
+    return Response.json(url.includes("?") ? { data: [remote("processed", "accredited")] } : remote("processed", "accredited"));
+  });
+  const pending = await processPayment(pedido.clienteId, pedido.id, { payer }, randomUUID());
+  assert.equal(pending.tentativa.podeTentarNovamente, false);
+  const attempt = memory.rows("tentativaPagamento")[0];
+  assert.equal(attempt.orderId, null);
+  await prisma.tentativaPagamento.update({ where: { id: attempt.id }, data: { bloqueadaAte: null } });
+  const recovered = await processPayment(pedido.clienteId, pedido.id);
+  assert.equal(recovered.pedido.statusPagamento, "APROVADO");
+  assert.equal(recovered.pedido.liberadoParaPreparo, true);
+  assert.equal(memory.rows("tentativaPagamento")[0].orderId, orderId);
+  assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+  assert.equal(calls.filter(call => call.init.method === undefined).length, 2);
+});
+
+for (const environment of ["test", "production"]) {
+  test(`Pix ${environment} sem live_mode: pendente com QR, idempotência e consulta até aprovação`, async () => {
+    process.env.MERCADO_PAGO_AMBIENTE = environment;
+    const input = { payer: environment === "test" ? { email: "test@testuser.com" } : payer };
+    response = remote("action_required", "waiting_transfer");
+    response.transactions.payments[0].payment_method.qr_code = "unit-pix-code-from-mocked-provider";
+    const key = randomUUID();
+    const pending = await processPayment(pedido.clienteId, pedido.id, input, key);
+    assert.equal(pending.pedido.statusPagamento, "PENDENTE");
+    assert.equal(pending.pedido.liberadoParaPreparo, false);
+    assert.equal(pending.tentativa.qrCode, "unit-pix-code-from-mocked-provider");
+    assert.equal(pending.tentativa.podeTentarNovamente, false);
+    await Promise.all([processPayment(pedido.clienteId, pedido.id, input, key), processPayment(pedido.clienteId, pedido.id, input, randomUUID())]);
+    response = remote("processed", "accredited");
+    const approved = await processPayment(pedido.clienteId, pedido.id);
+    assert.equal(approved.pedido.statusPagamento, "APROVADO");
+    assert.equal(approved.pedido.liberadoParaPreparo, true);
+    assert.equal(memory.rows("tentativaPagamento").length, 1);
+    assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+  });
+  test(`worker Pix ${environment} recupera Order assíncrona sem live_mode sem criar cobrança`, async () => {
+    process.env.MERCADO_PAGO_AMBIENTE = environment;
+    const input = { payer: environment === "test" ? { email: "test@testuser.com" } : payer };
+    response = { ...remote(), transactions: undefined };
+    await processPayment(pedido.clienteId, pedido.id, input, randomUUID());
+    const attempt = memory.rows("tentativaPagamento")[0];
+    assert.equal(attempt.orderId, orderId);
+    response = remote("processed", "accredited");
+    await prisma.tentativaPagamento.update({ where: { id: attempt.id }, data: { reconciliadaEm: null } });
+    const batch = await reconciliationBatch();
+    assert.equal(batch.tentativasConsultadas, 1);
+    assert.equal((await paymentView(pedido.clienteId, pedido.id)).pedido.liberadoParaPreparo, true);
+    assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+    assert.equal(calls.filter(call => call.init.method === undefined).length, 1);
+  });
+}
 
 for (const transactions of [undefined, null, {}, { payments: [] }, { payments: null }]) {
   test(`Order assíncrona ${JSON.stringify(transactions)} persiste ID e consulta sem nova cobrança`, async () => {
