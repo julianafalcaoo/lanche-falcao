@@ -5,7 +5,7 @@ import { PedidoError, isUuid } from "../pedidos/validation.ts";
 import { paymentConfig } from "./config.ts";
 import { mercadoPago, orderPayload, ProviderError } from "./client.ts";
 import { applyOrderSnapshot, reconcileAttempt } from "./reconciliation.ts";
-import { hasPaid } from "./states.ts";
+import { canPrepare, hasPaid } from "./states.ts";
 import { parsePayment, record } from "./validation.ts";
 import { sandboxPixInput } from "./sandbox.ts";
 
@@ -18,7 +18,8 @@ async function owned(clienteId: string, pedidoId: string) {
 export async function paymentView(clienteId: string, pedidoId: string) {
   const pedido = await owned(clienteId, pedidoId);
   const attempt = await prisma.tentativaPagamento.findFirst({ where: { pedidoId }, orderBy: [{ criadoEm: "desc" }, { id: "desc" }] });
-  return { pedido: { id: pedido.id, formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento, totalCentavos: pedido.totalCentavos },
+  return { pedido: { id: pedido.id, formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento, totalCentavos: pedido.totalCentavos,
+    liberadoParaPreparo: canPrepare(pedido.formaPagamento, pedido.statusPagamento) },
     tentativa: attempt ? { id: attempt.id, statusExterno: attempt.statusExterno, detalheExterno: attempt.detalheExterno, codigoErro: attempt.codigoErro,
       podeTentarNovamente: attempt.encerrada && !hasPaid(pedido.statusPagamento),
       aguardando: !attempt.encerrada, qrCode: attempt.qrCode, qrCodeBase64: attempt.qrCodeBase64, ticketUrl: attempt.ticketUrl } : null };

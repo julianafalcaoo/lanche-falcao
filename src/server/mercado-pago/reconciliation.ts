@@ -13,8 +13,8 @@ export async function applyOrderSnapshot(attemptId: string, lease: Date, raw: un
     if (attempt.bloqueadaAte?.getTime() !== lease.getTime() || lease <= new Date()) throw new ProviderError("RESERVA_EXPIRADA");
     const pedido = await tx.pedido.findUniqueOrThrow({ where: { id: attempt.pedidoId } });
     const result = normalizeOrder(raw, pedido, attempt.orderId);
-    if ((attempt.metodoExterno && attempt.metodoExterno !== result.metodoExterno) ||
-        (attempt.tipoMetodoExterno && attempt.tipoMetodoExterno !== result.tipoMetodoExterno)) throw new ProviderError("METODO_DIVERGENTE");
+    if (("metodoExterno" in result && attempt.metodoExterno && attempt.metodoExterno !== result.metodoExterno) ||
+        ("tipoMetodoExterno" in result && attempt.tipoMetodoExterno && attempt.tipoMetodoExterno !== result.tipoMetodoExterno)) throw new ProviderError("METODO_DIVERGENTE");
     if (attempt.atualizadaNoProvedor && !result.atualizadaNoProvedor) throw new ProviderError("REVISAO_AUSENTE");
     const oldRevision = attempt.atualizadaNoProvedor && result.atualizadaNoProvedor && result.atualizadaNoProvedor < attempt.atualizadaNoProvedor;
     const sameRevision = attempt.atualizadaNoProvedor && result.atualizadaNoProvedor === attempt.atualizadaNoProvedor;

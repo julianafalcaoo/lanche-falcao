@@ -6,7 +6,7 @@ import { checkoutRequest } from "./payment-api";
 import styles from "./checkout-page.module.css";
 
 interface BrickController { unmount(): Promise<void> }
-interface MPInstance { bricks(): { create(type: string, id: string, settings: { initialization: { amount: number; payer: { email: string } }; callbacks: { onReady(): void; onError(): void; onSubmit(data: CardData, additional: { paymentTypeId: string }): Promise<void> } }): Promise<BrickController> } }
+interface MPInstance { bricks(): { create(type: string, id: string, settings: { initialization: { amount: number; payer?: { email: string } }; callbacks: { onReady(): void; onError(): void; onSubmit(data: CardData, additional: { paymentTypeId: string }): Promise<void> } }): Promise<BrickController> } }
 declare global { interface Window { MercadoPago?: new (key: string, options: { locale: string }) => MPInstance } }
 
 export function CardPayment({ total, onSubmit }: { total: number; onSubmit: (data: CardData, paymentType: string) => Promise<void> }) {
@@ -18,11 +18,12 @@ export function CardPayment({ total, onSubmit }: { total: number; onSubmit: (dat
     if (!sdkReady) return;
     let disposed = false;
     let controller: BrickController | undefined;
-    void checkoutRequest<{ publicKey: string; payerEmail: string }>("/api/pagamentos/config").then(async config => {
+    void checkoutRequest<{ publicKey: string; payerEmail: string | null }>("/api/pagamentos/config").then(async config => {
       if (disposed || !window.MercadoPago) return;
       const mp = new window.MercadoPago(config.publicKey, { locale: "pt-BR" });
       controller = await mp.bricks().create("cardPayment", "card-payment-brick", {
-        initialization: { amount: total / 100, payer: { email: config.payerEmail } },
+        // Sem e-mail disponível no cadastro, o próprio Brick solicita o dado real.
+        initialization: { amount: total / 100, ...(config.payerEmail ? { payer: { email: config.payerEmail } } : {}) },
         callbacks: { onReady() {}, onError() { if (!disposed) setError("Não foi possível carregar o formulário seguro de cartão. Recarregue para tentar novamente."); },
           onSubmit(data, additional) { return submit.current(data, additional.paymentTypeId); } },
       });

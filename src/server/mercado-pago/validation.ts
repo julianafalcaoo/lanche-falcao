@@ -1,5 +1,6 @@
 ﻿import "server-only";
 import { PedidoError } from "../pedidos/validation.ts";
+import { paymentEnvironment } from "./config.ts";
 
 export const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 function keys(value: Record<string, unknown>, allowed: string[]) {
@@ -16,7 +17,11 @@ export function parsePayment(value: unknown, method: string): PaymentInput {
   if (!record(value.payer)) throw invalid();
   keys(value.payer, ["email", "identification", "first_name"]);
   const email = value.payer.email;
-  if (typeof email !== "string" || email.length > 254 || !/^[a-zA-Z0-9._+-]+@testuser\.com$/.test(email)) throw new PedidoError("EMAIL_TESTE", 422, "Não foi possível validar os dados do pagamento.");
+  const production = paymentEnvironment() === "production";
+  if (typeof email !== "string" || email.length > 254 ||
+      (production ? !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/.test(email) || /@(testuser\.com|example\.(com|org|net))$/i.test(email) : !/^[a-zA-Z0-9._+-]+@testuser\.com$/.test(email))) {
+    throw new PedidoError(production ? "EMAIL_COMPRADOR" : "EMAIL_TESTE", 422, "Informe um e-mail válido do comprador para o pagamento.");
+  }
   const payer: PaymentInput["payer"] = { email };
   if (value.payer.identification !== undefined) {
     const doc = value.payer.identification;
@@ -26,7 +31,7 @@ export function parsePayment(value: unknown, method: string): PaymentInput {
     payer.identification = { type: doc.type, number: doc.number };
   }
   if (value.payer.first_name !== undefined) {
-    if (method !== "PIX" || value.payer.first_name !== "APRO") throw invalid();
+    if (production || method !== "PIX" || value.payer.first_name !== "APRO") throw invalid();
     payer.first_name = "APRO";
   }
   if (method === "PIX") {

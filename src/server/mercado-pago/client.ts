@@ -1,5 +1,5 @@
 import "server-only";
-import { paymentConfig } from "./config.ts";
+import { paymentConfig, paymentEnvironment } from "./config.ts";
 import { record, type PaymentInput } from "./validation.ts";
 
 export class ProviderError extends Error {
@@ -40,7 +40,11 @@ export const mercadoPago = {
 
 export function normalizeOrder(value: unknown, pedido: { id: string; totalCentavos: number; formaPagamento: string | null }, expectedId?: string | null) {
   const invalid = () => new ProviderError("RESPOSTA_INVALIDA");
-  if (!record(value) || typeof value.id !== "string" || !/^ORD[a-zA-Z0-9]{10,60}$/.test(value.id) || (expectedId && value.id !== expectedId) || value.external_reference !== pedido.id || value.total_amount !== decimalAmount(pedido.totalCentavos) || value.type !== "online" || value.live_mode === true || typeof value.status !== "string" || !/^[a-z_]{1,80}$/.test(value.status) || typeof value.status_detail !== "string" || !/^[a-z_]{1,100}$/.test(value.status_detail)) throw invalid();
+  const production = paymentEnvironment() === "production";
+  if (!record(value) || typeof value.id !== "string" || !/^ORD[a-zA-Z0-9]{10,60}$/.test(value.id) || (expectedId && value.id !== expectedId) || value.external_reference !== pedido.id || value.total_amount !== decimalAmount(pedido.totalCentavos) || value.type !== "online" ||
+      (production ? value.live_mode !== true : value.live_mode !== undefined && value.live_mode !== false) ||
+      (value.currency !== undefined && value.currency !== "BRL") || (value.country_code !== undefined && value.country_code !== "BRA") ||
+      typeof value.status !== "string" || !/^[a-z_]{1,80}$/.test(value.status) || typeof value.status_detail !== "string" || !/^[a-z_]{1,100}$/.test(value.status_detail)) throw invalid();
   const status = value.status, detail = value.status_detail;
   let atualizadaNoProvedor: string | null = null;
   if (value.last_updated_date !== undefined) {
@@ -52,6 +56,14 @@ export function normalizeOrder(value: unknown, pedido: { id: string; totalCentav
     atualizadaNoProvedor = `${match[1]}.${(match[2] ?? "").padEnd(9, "0")}Z`;
   }
   const payments = record(value.transactions) ? value.transactions.payments : null;
+  // Somente estados assíncronos documentados podem vincular uma Order sem transação.
+  // Nunca inferir aprovação, método ou QR de uma resposta incompleta.
+  const missingPayments = value.transactions === undefined || value.transactions === null ||
+    (record(value.transactions) && (payments === undefined || payments === null || (Array.isArray(payments) && payments.length === 0)));
+  if (missingPayments && ((status === "processing" && detail === "in_process") || (status === "created" && detail === "created"))) {
+    return { orderId: value.id, statusExterno: status, detalheExterno: detail, localStatus: "PENDENTE", atualizadaNoProvedor,
+      encerrada: false, qrCode: null, qrCodeBase64: null, ticketUrl: null } as const;
+  }
   const payment = Array.isArray(payments) && payments.length === 1 && record(payments[0]) ? payments[0] : null;
   const method = payment && record(payment.payment_method) ? payment.payment_method : null;
   if (!payment || payment.amount !== decimalAmount(pedido.totalCentavos) || !method || typeof method.id !== "string" || !/^[a-zA-Z0-9_-]{1,40}$/.test(method.id) || (pedido.formaPagamento === "PIX" ? method.id !== "pix" || method.type !== "bank_transfer" : pedido.formaPagamento !== "CARTAO" || !["credit_card", "debit_card"].includes(String(method.type)))) throw invalid();

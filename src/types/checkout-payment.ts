@@ -3,6 +3,7 @@ export interface CheckoutOrder {
   formaPagamento: "PIX" | "DINHEIRO" | "CARTAO";
   statusPagamento: "PENDENTE" | "APROVADO" | "RECUSADO" | "CANCELADO" | "ESTORNADO" | "ESTORNADO_PARCIAL" | "CONTESTADO";
   totalCentavos: number;
+  liberadoParaPreparo?: boolean;
 }
 export interface PaymentView {
   pedido: CheckoutOrder;

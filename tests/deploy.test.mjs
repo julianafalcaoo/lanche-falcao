@@ -74,7 +74,7 @@ test("cron GET falha fechado, não aceita o segredo do POST",async t=>{
 });
 test("cron GET e POST autenticados executam lote sem cache",async t=>{
   env(t,"CRON_SECRET","unit-cron");env(t,"MERCADO_PAGO_RECONCILIACAO_SECRET","unit-post");
-  env(t,"MERCADO_PAGO_ACCESS_TOKEN","fake");env(t,"MERCADO_PAGO_PUBLIC_KEY","fake");env(t,"MERCADO_PAGO_AMBIENTE","test");
+  env(t,"MERCADO_PAGO_ACCESS_TOKEN","fake-private");env(t,"MERCADO_PAGO_PUBLIC_KEY","fake-public");env(t,"MERCADO_PAGO_AMBIENTE","test");
   for(const model of ["tentativaPagamento","webhookOrder"]){const original=prisma[model].findMany;prisma[model].findMany=t.mock.fn(async()=>[]);t.after(()=>{prisma[model].findMany=original;});}
   for(const [handler,secret] of [[GET,"unit-cron"],[POST,"unit-post"]]){
     const response=await handler(new Request("https://app.invalid/api/cron",{headers:{authorization:`Bearer ${secret}`}}));

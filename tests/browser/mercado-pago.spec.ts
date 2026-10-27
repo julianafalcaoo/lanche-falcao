@@ -3,7 +3,7 @@
 const id = "11111111-1111-4111-8111-111111111111";
 const qr = "pix-retornado-pelo-provedor-no-teste";
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XkAAAAASUVORK5CYII=";
-async function setup(page: Page) {
+async function setup(page: Page, production = false) {
   let currentId = id;
   let total = 800;
   const orders = new Map<string, { id: string; body: Record<string, unknown> }>();
@@ -21,10 +21,15 @@ async function setup(page: Page) {
     if (url.href === "https://sdk.mercadopago.com/js/v2") return route.fulfill({ contentType: "application/javascript", body: `
       window.MercadoPago = class {
         bricks() { return { create: async (type, id, settings) => {
-          if (settings.initialization.payer.email !== "test@testuser.com") throw new Error("Missing official test email initialization");
+          if (settings.initialization.payer && settings.initialization.payer.email !== "test@testuser.com") throw new Error("Unexpected email initialization");
           const root = document.getElementById(id);
+          const email = document.createElement("input"); email.type = "email"; email.required = true; email.setAttribute("aria-label", "E-mail do cartão");
+          if (!settings.initialization.payer) root.append(email);
           const button = document.createElement("button"); button.type = "button"; button.textContent = "Pagar com cartão de teste";
-          button.onclick = () => settings.callbacks.onSubmit({ token: "mock_token_123456789", payment_method_id: "visa", installments: 1, transaction_amount: 0.01, card_number: "SHOULD_NOT_FORWARD", payer: { email: "test@testuser.com", identification: { type: "CPF", number: "12345678909" } } }, { paymentTypeId: "credit_card" });
+          button.onclick = () => {
+            if (!settings.initialization.payer && !email.reportValidity()) return;
+            return settings.callbacks.onSubmit({ token: "mock_token_123456789", payment_method_id: "visa", installments: 1, transaction_amount: 0.01, card_number: "SHOULD_NOT_FORWARD", payer: { email: settings.initialization.payer?.email ?? email.value, identification: { type: "CPF", number: "12345678909" } } }, { paymentTypeId: "credit_card" });
+          };
           root.append(button); settings.callbacks.onReady();
           return { unmount: async () => root.replaceChildren() };
         } }; }
@@ -33,7 +38,7 @@ async function setup(page: Page) {
     if (url.origin !== "http://127.0.0.1:3100") return route.abort();
     if (!url.pathname.startsWith("/api/")) return route.continue();
     if (url.pathname === "/api/auth/me") return route.fulfill({ json: { autenticado: true, cliente: { nome: "Cliente teste", telefone: "+5592999999999" } } });
-    if (url.pathname === "/api/pagamentos/config") return route.fulfill({ json: { publicKey: "mock-public", ambiente: "test", payerEmail: "test@testuser.com" } });
+    if (url.pathname === "/api/pagamentos/config") return route.fulfill({ json: { publicKey: "mock-public", ambiente: production ? "production" : "test", payerEmail: production ? null : "test@testuser.com" } });
     if (route.request().method() === "POST") {
       const body = route.request().postDataJSON();
       requests.push({ path: url.pathname, body, key: route.request().headers()["idempotency-key"] });
@@ -68,11 +73,38 @@ async function begin(page: Page, method: string) {
   await page.getByRole("radio", { name: method, exact: true }).check();
   await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
 }
+test("Pix de produção solicita e-mail e não gera cobrança automaticamente", async ({ page }) => {
+  const api = await setup(page, true);
+  await begin(page, "PIX");
+  await expect(page.getByLabel("E-mail do comprador")).toBeVisible();
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento"))).toHaveLength(0);
+  await page.getByRole("button", { name: "Gerar Pix", exact: true }).click();
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento"))).toHaveLength(0);
+  await page.getByLabel("E-mail do comprador").fill("comprador@dominio.com.br");
+  await page.getByRole("button", { name: "Gerar Pix", exact: true }).click();
+  await expect(page.getByLabel("Pix Copia e Cola", { exact: true })).toHaveValue(qr);
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento"))[0].body).toEqual({ payer: { email: "comprador@dominio.com.br" } });
+  await expect(page.getByRole("button", { name: "Concluir pedido", exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByLabel("Pix Copia e Cola", { exact: true })).toHaveValue(qr);
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento"))).toHaveLength(1);
+});
+test("cartão de produção solicita e-mail no Brick sem preencher fixture", async ({ page }) => {
+  const api = await setup(page, true);
+  await begin(page, "Cartão");
+  await page.getByLabel("E-mail do cartão").fill("comprador@dominio.com.br");
+  await page.getByRole("button", { name: "Pagar com cartão de teste" }).click();
+  await expect(page.getByText("Pagamento aprovado.", { exact: true })).toBeVisible();
+  const body = api.requests.find(request => request.path.endsWith("/pagamento"))!.body;
+  expect(body).toMatchObject({ payer: { email: "comprador@dominio.com.br" } });
+  expect(body).not.toHaveProperty("card_number");
+  expect(body).not.toHaveProperty("transaction_amount");
+});
 for (const change of ["quantity", "replace", "payment", "change", "delivery"] as const) {
   test(`nova intenção (${change}) exige finalizar novamente e preserva pedido anterior`, async ({ page }) => {
     const api = await setup(page);
     await begin(page, change === "change" ? "Dinheiro" : "PIX");
-    await expect(page.getByRole("heading", { name: change === "change" ? "Pedido confirmado" : "Pagamento via Pix" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: change === "change" ? "Pedido criado" : "Pagamento via Pix", exact: true })).toBeVisible();
     if (change !== "change") await expect(page.getByLabel("Pix Copia e Cola", { exact: true })).toHaveValue(qr);
     const original = structuredClone(api.requests.find(request => request.path === "/api/pedidos")!);
     await page.evaluate(change => {
@@ -116,12 +148,12 @@ test("dinheiro confirma pedido, preserva troco e só limpa carrinho ao concluir"
   await page.getByRole("radio", { name: "Sim", exact: true }).check();
   await page.getByLabel("Troco para quanto?").fill("20,00");
   await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Pedido confirmado" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Pedido criado", exact: true })).toBeVisible();
   expect(api.requests).toHaveLength(1);
   expect(api.requests[0].body).toMatchObject({ formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 2000 });
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("lanche-falcao:cart")!))).toHaveLength(1);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Pedido confirmado" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Pedido criado", exact: true })).toBeVisible();
   expect(api.requests).toHaveLength(1);
   await page.getByRole("button", { name: "Concluir pedido", exact: true }).click();
   await expect(page.getByText("Seu carrinho está vazio.")).toBeVisible();
@@ -194,7 +226,7 @@ test("Brick transmite token permitido, trata recusa e tenta novamente no mesmo P
 test("itens adicionados depois da confirmação não são apagados", async ({ page }) => {
   await setup(page);
   await begin(page, "Dinheiro");
-  await expect(page.getByRole("heading", { name: "Pedido confirmado" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Pedido criado", exact: true })).toBeVisible();
   await page.evaluate(() => localStorage.setItem("lanche-falcao:cart", JSON.stringify([{ productId: "coxinha-frango", quantity: 3 }])));
   await page.getByRole("button", { name: "Concluir pedido", exact: true }).click();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("lanche-falcao:cart")!)[0].quantity)).toBe(3);
@@ -234,7 +266,7 @@ test("Pix automático com resposta perdida não inventa QR e repete a mesma chav
 test("carrinho esvaziado não recupera o pedido anterior", async ({ page }) => {
   const api = await setup(page);
   await begin(page, "Dinheiro");
-  await expect(page.getByRole("heading", { name: "Pedido confirmado" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Pedido criado", exact: true })).toBeVisible();
   await page.evaluate(() => localStorage.setItem("lanche-falcao:cart", "[]"));
   await page.reload();
   await expect(page.getByText("Seu carrinho está vazio.")).toBeVisible();

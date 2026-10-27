@@ -4,6 +4,7 @@ import { products } from "../../data/menu.ts";
 import { prisma } from "../../lib/prisma.ts";
 import type { Prisma } from "../../generated/prisma/client.ts";
 import { PedidoError, isUuid, parsePedido } from "./validation.ts";
+import { canPrepare } from "../mercado-pago/states.ts";
 
 const select = {
   id: true, tipo: true, status: true, subtotalCentavos: true, totalCentavos: true,
@@ -20,6 +21,7 @@ function publicPedido(pedido: StoredPedido) {
   return {
     id: pedido.id, tipo: pedido.tipo, status: pedido.status,
     formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento,
+    liberadoParaPreparo: canPrepare(pedido.formaPagamento, pedido.statusPagamento),
     precisaTroco: pedido.precisaTroco, trocoParaCentavos: pedido.trocoParaCentavos,
     subtotalCentavos: pedido.subtotalCentavos, totalCentavos: pedido.totalCentavos,
     criadoEm: pedido.criadoEm, atualizadoEm: pedido.atualizadoEm, itens: pedido.itens,

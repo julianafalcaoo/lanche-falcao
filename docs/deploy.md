@@ -188,7 +188,7 @@ A seleção inclui tentativas pendentes e encerradas com Order vinculada. A cons
 
 ## Bloqueios para produção comercial real
 
-Não basta trocar MERCADO_PAGO_AMBIENTE: valores diferentes de test são recusados. Também permanecem fixtures de pagador, validação de e-mails de teste, rejeição de live_mode=true e falta de homologação real de cartão/3DS. Esses bloqueios não foram removidos.
+O código agora aceita explicitamente `test` e `production`, solicita e-mail real no fluxo produtivo, valida o ambiente das respostas e persiste Orders assíncronas. Isso prepara a homologação e não autoriza ativação direta. Consulte [Preparação de produção de pagamentos](preparacao-producao-pagamentos.md) para os controles e limites atuais. A homologação real de cartão/3DS, contas/credenciais e infraestrutura permanece pendente.
 
 Antes de produção, implementar/validar pagador real, política de credenciais/contas, 3DS, operação de estornos/contestações, tratamento de pagamentos excepcionais, suporte operacional e homologar os limites distribuídos de abuso e gastos sob carga. Planejar retenção e limpeza de desafios, sessões e fila, monitoramento, recuperação/backup e política de privacidade. A allowlist de SMS agora é opcional, com cotas persistentes obrigatórias antes dos envios.
 

@@ -19,9 +19,10 @@
     "test:pedidos": "node --conditions=react-server --env-file=.env scripts/test-auth.mjs pedidos",
     "test:mercado-pago": "node --conditions=react-server --env-file=.env scripts/test-auth.mjs mercado-pago",
     "test:webhook": "node --conditions=react-server --test --test-isolation=none tests/webhook.test.mjs",
+    "test:payment-production": "node --conditions=react-server --test --test-isolation=none tests/payment-production.test.mjs",
     "test:webhook:postgres": "node --conditions=react-server --env-file=.env scripts/test-auth.mjs webhook-postgres",
     "test:deploy": "node --conditions=react-server --test --test-isolation=none tests/deploy.test.mjs",
-    "test": "npm run test:identificacao && npm run test:otp && npm run test:auth && npm run test:otp-rate-limit && npm run test:pedidos && npm run test:webhook && npm run test:deploy"
+    "test": "npm run test:identificacao && npm run test:otp && npm run test:auth && npm run test:otp-rate-limit && npm run test:pedidos && npm run test:webhook && npm run test:deploy && npm run test:payment-production"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",

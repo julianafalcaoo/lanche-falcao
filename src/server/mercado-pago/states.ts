@@ -2,6 +2,11 @@ export type PaymentStatus = "PENDENTE" | "APROVADO" | "RECUSADO" | "CANCELADO" |
 
 export const hasPaid = (status: string | null) => ["APROVADO", "ESTORNADO", "ESTORNADO_PARCIAL", "CONTESTADO"].includes(status ?? "");
 
+// Recebimento do pedido e bloqueio de nova cobrança não autorizam preparo.
+// Dinheiro pendente também exige confirmação operacional futura; nunca vira pago aqui.
+export const canPrepare = (method: string | null, status: string | null) =>
+  (method === "PIX" || method === "CARTAO") && status === "APROVADO";
+
 /** Sem revisão remota confiável, nunca reabrir cobrança por uma leitura regressiva. */
 export function acceptsTransition(previous: string | null, next: PaymentStatus) {
   if (previous === "ESTORNADO") return next === "ESTORNADO";

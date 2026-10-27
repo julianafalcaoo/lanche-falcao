@@ -19,6 +19,8 @@ A interface é responsiva, adaptada para celulares, tablets e computadores, e ut
 - **ESLint 9** — análise estática do código.
 - **npm** — gerenciamento de dependências e execução de scripts.
 ## APIS USADAS
+Preparação de pagamentos reais, testes seguros e limitações: [documentação da etapa 1](docs/preparacao-producao-pagamentos.md).
+
 - SMS -> INFOBIP
 - PROCURAR END POR CEP -> VIACEP
 - PAGAMENTOS -> MERCADO PAGO
