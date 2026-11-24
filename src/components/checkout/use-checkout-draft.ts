@@ -42,6 +42,7 @@ export function useCheckoutDraft() {
   }, [state]);
   return {
     ...state,
+    reset: () => dispatch({ type: "restore", draft: emptyDraft }),
     setOrderType: (value: OrderType) => dispatch({ type: "orderType", value }),
     setAddress: (value: SetStateAction<DeliveryAddress>) => dispatch({ type: "address", value }),
     setPayment: (value: PaymentDraft) => dispatch({ type: "payment", value }),

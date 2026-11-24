@@ -17,6 +17,6 @@ export async function POST(request: Request, context: Context) {
     protectMutation(request);
     const body = await pedidoBody(request);
     const consult = record(body) && Object.keys(body).length === 1 && body.consultar === true;
-    return pedidoJson(await processPayment(clienteId, (await context.params).id, consult ? undefined : body, consult ? undefined : parseKey(request.headers.get("Idempotency-Key"))));
+    return pedidoJson(await processPayment(clienteId, (await context.params).id, consult ? undefined : body, consult ? undefined : parseKey(request.headers.get("Idempotency-Key")), true));
   } catch (error) { return pedidoFailure(error); }
 }

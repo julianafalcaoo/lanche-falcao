@@ -1,14 +1,16 @@
 ﻿import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { after, beforeEach, test } from "node:test";
 import { prisma } from "../src/lib/prisma.ts";
-import { criarPedido } from "../src/server/pedidos/service.ts";
+import { alterarPagamento, criarPedido } from "../src/server/pedidos/service.ts";
 import { processPayment, paymentView } from "../src/server/mercado-pago/service.ts";
 import { normalizeOrder, orderPayload, mercadoPago } from "../src/server/mercado-pago/client.ts";
 import { parsePayment } from "../src/server/mercado-pago/validation.ts";
 import { POST, GET } from "../src/app/api/pedidos/[id]/pagamento/route.ts";
 import { GET as config } from "../src/app/api/pagamentos/config/route.ts";
 import { newToken, sessionCookieName, tokenHash } from "../src/server/auth/session.ts";
+import { receiveOrderWebhook } from "../src/server/mercado-pago/webhook.ts";
+import { reconcileAttempt } from "../src/server/mercado-pago/reconciliation.ts";
 
 const database = new URL(process.env.DATABASE_URL).pathname.slice(1);
 if (!/^lf_auth_test_[a-f0-9]{24}$/.test(database) || database !== process.env.AUTH_TEST_DATABASE) throw new Error("Use banco descartável.");
@@ -24,6 +26,7 @@ beforeEach(async t => {
   mockEnv(t, "MERCADO_PAGO_ACCESS_TOKEN", "mock-private-access-token");
   mockEnv(t, "MERCADO_PAGO_PUBLIC_KEY", "mock-public-key");
   mockEnv(t, "MERCADO_PAGO_AMBIENTE", "test");
+  mockEnv(t, "MERCADO_PAGO_CREDENTIAL_PAIR_SHA256", createHash("sha256").update(JSON.stringify(["test", "mock-private-access-token", "mock-public-key"])).digest("hex"));
   calls = [];
   t.mock.method(globalThis, "fetch", async (url, init) => { calls.push({ url, init }); throw new Error("Rede externa bloqueada"); });
   await prisma.pedido.deleteMany();
@@ -78,10 +81,112 @@ function external(pedido, status = "action_required", detail = "waiting_transfer
 function respond(data, status = 200) {
   fetch.mock.mockImplementation(async (url, init) => { calls.push({ url, init }); return Response.json(data, { status }); });
 }
+const challengeUrl = "https://www.mercadopago.com.br/auth/card/validation/pages/remedies/11111111-1111-4111-8111-111111111111?display_mode=self_hosted&guest_token=isolated_challenge_fixture";
+
+function cardChallenge(pedido, url = challengeUrl) {
+  const remote = external(pedido, "action_required", "pending_challenge");
+  remote.transactions.payments[0].payment_method.transaction_security = { url };
+  return remote;
+}
 async function unlock(id) { await prisma.tentativaPagamento.updateMany({ where: { pedidoId: id }, data: { bloqueadaAte: null } }); }
 function req(id, body, key = randomUUID(), customCookie = cookie, origin = "http://localhost") {
   return POST(new Request(`http://localhost/api/pedidos/${id}/pagamento`, { method: "POST", headers: { cookie: customCookie, origin, "content-type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
 }
+test("leituras Pix são locais; recuperação autenticada tem intervalo compartilhado e não cria Order", async () => {
+  const pedido = await order();
+  respond(external(pedido));
+  await req(pedido.id, pix);
+  assert.equal(calls.length, 1);
+  const ctx = { params: Promise.resolve({ id: pedido.id }) };
+  const url = `http://localhost/api/pedidos/${pedido.id}/pagamento`;
+  assert.equal((await GET(new Request(url, { headers: { cookie } }), ctx)).status, 200);
+  assert.equal((await GET(new Request(url), ctx)).status, 401);
+  assert.equal((await req(pedido.id, { consultar: true }, randomUUID(), "")).status, 401);
+  await req(pedido.id, { consultar: true });
+  assert.equal(calls.length, 1);
+
+  await prisma.tentativaPagamento.updateMany({ where: { pedidoId: pedido.id }, data: { reconciliadaEm: new Date(0) } });
+  await Promise.all(Array.from({ length: 5 }, () => req(pedido.id, { consultar: true })));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, undefined);
+  assert.equal(await prisma.tentativaPagamento.count(), 1);
+});
+
+test("recuperação Pix sem ID usa busca com intervalo, inclusive quando a resposta é incerta", async () => {
+  const pedido = await order();
+  await req(pedido.id, pix);
+  assert.equal(calls.length, 1);
+  await prisma.tentativaPagamento.updateMany({ where: { pedidoId: pedido.id }, data: { bloqueadaAte: null, reconciliadaEm: new Date(0) } });
+  respond({ data: [] });
+  await req(pedido.id, { consultar: true });
+  await unlock(pedido.id);
+  await req(pedido.id, { consultar: true });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, undefined);
+  assert.equal(await prisma.tentativaPagamento.count(), 1);
+});
+test("troca vence a corrida e uma cobrança que leu o método antigo não é reservada", async t => {
+  const pedido = await order();
+  const transaction = prisma.$transaction;
+  let entered, resume;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { resume = resolve; });
+  let first = true;
+  prisma.$transaction = async (...args) => {
+    if (first) {
+      first = false;
+      entered();
+      await gate;
+    }
+    return transaction.apply(prisma, args);
+  };
+  t.after(() => { prisma.$transaction = transaction; });
+  const attempt = req(pedido.id, pix);
+  try {
+    await waiting;
+    const changed = await alterarPagamento(cliente.id, pedido.id, { formaPagamento: "CARTAO" });
+    assert.equal(changed.formaPagamento, "CARTAO");
+  } finally { resume(); }
+  const stale = await attempt;
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).erro, "FORMA_PAGAMENTO_ALTERADA");
+  assert.equal(await prisma.tentativaPagamento.count(), 0);
+  assert.deepEqual(calls, []);
+});
+
+for (const method of ["PIX", "CARTAO"]) {
+  test(`${method} reservado bloqueia troca durante resposta incerta e após aprovação`, async () => {
+    const pedido = await order(method);
+    let entered, resume;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { resume = resolve; });
+    fetch.mock.mockImplementation(async (url, init) => {
+      calls.push({ url, init });
+      entered();
+      await gate;
+      return Response.json(external(pedido, "processed", "accredited"));
+    });
+    const payment = req(pedido.id, method === "PIX" ? pix : card);
+    const cash = { formaPagamento: "DINHEIRO", precisaTroco: false };
+    try {
+      await waiting;
+      await assert.rejects(alterarPagamento(cliente.id, pedido.id, cash), { code: "TROCA_PAGAMENTO_BLOQUEADA" });
+    } finally { resume(); }
+    assert.equal((await (await payment).json()).pedido.statusPagamento, "APROVADO");
+    await assert.rejects(alterarPagamento(cliente.id, pedido.id, cash), { code: "TROCA_PAGAMENTO_BLOQUEADA" });
+    assert.equal(await prisma.tentativaPagamento.count(), 1);
+    assert.equal(calls.length, 1);
+  });
+}
+
+test("tentativa definitivamente encerrada mantém o método para eventos tardios", async () => {
+  const pedido = await order("CARTAO");
+  respond(external(pedido, "failed", "failed"), 402);
+  const initial = await processPayment(cliente.id, pedido.id, card, randomUUID());
+  assert.equal(initial.tentativa.podeTentarNovamente, true);
+  await assert.rejects(alterarPagamento(cliente.id, pedido.id, { formaPagamento: "PIX" }), { code: "TROCA_PAGAMENTO_BLOQUEADA" });
+  assert.equal((await paymentView(cliente.id, pedido.id)).pedido.formaPagamento, "CARTAO");
+});
 test("dinheiro cria pedido sem chamar Mercado Pago nem exigir credenciais", async t => {
   mockEnv(t, "MERCADO_PAGO_ACCESS_TOKEN", "");
   const pedido = await order("DINHEIRO");
@@ -116,8 +221,124 @@ test("cartão aprovado envia somente token/metadados e não persiste token ou pa
     assert.equal(JSON.stringify(rows).includes(secret), false);
     assert.equal(JSON.stringify(view).includes(secret), false);
   }
-  const method = JSON.parse(calls[0].init.body).transactions.payments[0].payment_method;
+  const payload = JSON.parse(calls[0].init.body);
+  assert.equal(payload.total_amount, "8.00");
+  assert.deepEqual(payload.config.online.transaction_security, { validation: "on_fraud_risk", liability_shift: "required" });
+  const method = payload.transactions.payments[0].payment_method;
   assert.deepEqual(Object.keys(method).sort(), ["id", "installments", "token", "type"]);
+});
+
+test("3DS pendente recupera a URL por consulta do titular, preserva a cobrança única e aceita webhook tardio", async t => {
+  const pedido = await order("CARTAO");
+  const key = randomUUID();
+  respond(cardChallenge(pedido));
+  const initial = await processPayment(cliente.id, pedido.id, card, key);
+  assert.equal(initial.desafio3dsUrl, challengeUrl);
+  assert.equal(initial.pedido.statusPagamento, "PENDENTE");
+  assert.equal(initial.pedido.liberadoParaPreparo, false);
+  assert.equal(initial.tentativa.podeTentarNovamente, false);
+  assert.equal(JSON.stringify(await prisma.tentativaPagamento.findMany()).includes("guest_token"), false);
+  assert.equal((await paymentView(cliente.id, pedido.id)).desafio3dsUrl, undefined);
+  assert.equal((await req(pedido.id, { consultar: true }, randomUUID(), "")).status, 401);
+  assert.equal((await req(pedido.id, { consultar: true }, randomUUID(), cookie, "https://outro.invalid")).status, 403);
+  await prisma.tentativaPagamento.updateMany({ where: { pedidoId: pedido.id }, data: { reconciliadaEm: new Date(0) } });
+  const recovered = await (await req(pedido.id, { consultar: true })).json();
+  assert.equal(recovered.desafio3dsUrl, challengeUrl);
+  await req(pedido.id, card);
+  assert.equal(await prisma.tentativaPagamento.count(), 1);
+  assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+
+  const secret = "isolated-card-webhook";
+  mockEnv(t, "MERCADO_PAGO_WEBHOOK_SECRET", secret);
+  const approved = external(pedido, "processed", "accredited");
+  respond(approved);
+  const requestId = randomUUID();
+  const ts = String(Math.floor(Date.now() / 1000));
+  const mac = createHmac("sha256", secret).update(`id:${approved.id};request-id:${requestId};ts:${ts};`).digest("hex");
+  const jobs = [];
+  const hook = new Request(`http://localhost/api/webhooks/mercado-pago?data.id=${approved.id}&type=order`, {
+    method: "POST", headers: { "content-type": "application/json", "x-request-id": requestId, "x-signature": `ts=${ts},v1=${mac}` },
+    body: JSON.stringify({ type: "order", data: { id: approved.id } }),
+  });
+  assert.equal((await receiveOrderWebhook(hook, job => jobs.push(job))).status, 200);
+  await Promise.all(jobs.map(job => job()));
+  const final = await paymentView(cliente.id, pedido.id);
+  assert.equal(final.pedido.statusPagamento, "APROVADO");
+  assert.equal(final.pedido.liberadoParaPreparo, true);
+  assert.equal(final.desafio3dsUrl, undefined);
+});
+
+test("3DS rejeita destino fora do contrato e mantém tentativa ativa", async () => {
+  const pedido = await order("CARTAO");
+  for (const url of [
+    challengeUrl.replace("https:", "http:"),
+    challengeUrl.replace("www.mercadopago.com.br", "www.mercadopago.com.br.example.test"),
+    challengeUrl.replace("/auth/card/validation/pages/remedies/", "/outra-pagina/"),
+    challengeUrl + "&guest_token=duplicado",
+  ]) {
+    const state = normalizeOrder(cardChallenge(pedido, url), pedido);
+    assert.equal(state.desafio3dsUrl, null);
+    assert.equal(state.encerrada, false);
+  }
+});
+
+for (const [status, detail, expected] of [
+  ["failed", "cc_rejected_3ds_challenge", "RECUSADO"],
+  ["failed", "invalid_card_token", "RECUSADO"],
+  ["failed", "3ds_challenge_expired", "CANCELADO"],
+  ["canceled", "expired", "CANCELADO"],
+  ["processing", "in_review", "PENDENTE"],
+]) test(`cartão processa estado documentado ${status}/${detail}`, async () => {
+  const pedido = await order("CARTAO");
+  respond(external(pedido, status, detail), status === "failed" ? 402 : 200);
+  const result = await processPayment(cliente.id, pedido.id, card, randomUUID());
+  assert.equal(result.pedido.statusPagamento, expected);
+  assert.equal(result.tentativa.podeTentarNovamente, expected !== "PENDENTE");
+  assert.equal(result.desafio3dsUrl, undefined);
+});
+
+test("retry de cartão anterior ao 3DS mantém corpo e chave recebidos originalmente", async () => {
+  const pedido = await order("CARTAO");
+  const originalPayload = orderPayload(pedido, parsePayment(card, "CARTAO"), false);
+  const chaveCliente = randomUUID();
+  const chaveProvedor = randomUUID();
+  await prisma.tentativaPagamento.create({ data: {
+    pedidoId: pedido.id, chaveCliente, chaveProvedor, statusLocal: "PENDENTE", envios: 1,
+    metodoExterno: "visa", tipoMetodoExterno: "credit_card",
+    requisicaoHash: createHash("sha256").update(JSON.stringify(originalPayload)).digest("hex"),
+  } });
+  respond(external(pedido, "processed", "accredited"));
+  await processPayment(cliente.id, pedido.id, card, chaveCliente);
+  assert.equal(calls[0].init.body, JSON.stringify(originalPayload));
+  assert.equal(calls[0].init.headers["X-Idempotency-Key"], chaveProvedor);
+  assert.equal(await prisma.tentativaPagamento.count(), 1);
+});
+
+test("token recusado no primeiro envio encerra, mas erro após resposta perdida mantém tentativa incerta", async () => {
+  const primeiro = await order("CARTAO");
+  const tokenError = { errors: [{ code: "invalid_card_token", message: "private fixture" }] };
+  respond(tokenError, 400);
+  const rejected = await processPayment(cliente.id, primeiro.id, card, randomUUID());
+  assert.equal(rejected.pedido.statusPagamento, "RECUSADO");
+  assert.equal(rejected.tentativa.codigoErro, "CARTAO_TOKEN_INVALIDO");
+  assert.equal(rejected.tentativa.podeTentarNovamente, true);
+  assert.equal(JSON.stringify(rejected).includes("private fixture"), false);
+
+  const outro = await order("CARTAO");
+  const key = randomUUID();
+  fetch.mock.mockImplementation(async (url, init) => { calls.push({ url, init }); throw new DOMException("timeout", "TimeoutError"); });
+  const pending = await processPayment(cliente.id, outro.id, card, key);
+  assert.equal(pending.pedido.statusPagamento, "PENDENTE");
+  assert.equal(pending.tentativa.codigoErro, "RESPOSTA_INCERTA");
+  const firstSend = calls.at(-1);
+  await unlock(outro.id);
+  respond(tokenError, 400);
+  const stillPending = await processPayment(cliente.id, outro.id, card, key);
+  const repeated = calls.at(-1);
+  assert.equal(repeated.init.body, firstSend.init.body);
+  assert.equal(repeated.init.headers["X-Idempotency-Key"], firstSend.init.headers["X-Idempotency-Key"]);
+  assert.equal(stillPending.pedido.statusPagamento, "PENDENTE");
+  assert.equal(stillPending.tentativa.podeTentarNovamente, false);
 });
 test("HTTP 402 com Order recusada preserva referência e permite nova tentativa", async () => {
   const pedido = await order("CARTAO");
@@ -129,6 +350,76 @@ test("HTTP 402 com Order recusada preserva referência e permite nova tentativa"
   respond(next);
   assert.equal((await processPayment(cliente.id, pedido.id, card, randomUUID())).pedido.statusPagamento, "APROVADO");
   assert.equal(await prisma.tentativaPagamento.count(), 2);
+});
+
+test("detalhe OTHE exige falha final compatível na Order e na transação", () => {
+  const pedido = { id: randomUUID(), formaPagamento: "CARTAO", totalCentavos: 800 };
+  for (const [status, detail, paymentStatus, expected] of [
+    ["failed", "failed", "failed", "RECUSADO"],
+    ["pending", "pending", "failed", "PENDENTE"],
+    ["action_required", "pending_challenge", "failed", "PENDENTE"],
+    ["failed", "failed", "pending", "PENDENTE"],
+    ["failed", "high_risk", "failed", "PENDENTE"],
+  ]) {
+    const snapshot = external(pedido, status, detail);
+    Object.assign(snapshot.transactions.payments[0], { status: paymentStatus, status_detail: "3ds_challenge_failed" });
+    const result = normalizeOrder(snapshot, pedido);
+    assert.equal(result.localStatus, expected);
+    assert.equal(result.encerrada, expected === "RECUSADO");
+    assert.equal(result.codigoErro, expected === "RECUSADO" ? "CARTAO_3DS_RECUSADO" : null);
+  }
+});
+
+test("reconciliação da Order OTHE encerra uma única vez e libera só uma nova tentativa", async () => {
+  const pedido = await order("CARTAO");
+  const key = randomUUID();
+  respond(cardChallenge(pedido));
+  await processPayment(cliente.id, pedido.id, card, key);
+  const attempt = await prisma.tentativaPagamento.findFirstOrThrow({ where: { pedidoId: pedido.id } });
+  assert.equal((await paymentView(cliente.id, pedido.id)).tentativa.podeTentarNovamente, false);
+  const snapshot = external(pedido, "failed", "failed");
+  snapshot.transactions.payments[0].status_detail = "3ds_challenge_failed";
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  fetch.mock.mockImplementation(async (url, init) => {
+    calls.push({ url, init });
+    enter();
+    await gate;
+    return Response.json(snapshot);
+  });
+  const reconciliation = reconcileAttempt(attempt.id);
+  try {
+    await entered;
+    await assert.rejects(reconcileAttempt(attempt.id), { code: "RECONCILIACAO_OCUPADA" });
+  } finally {
+    release();
+    await reconciliation;
+  }
+  assert.equal(calls.length, 2);
+  respond(snapshot);
+  await reconcileAttempt(attempt.id);
+  const view = await (await GET(new Request("http://localhost", { headers: { cookie } }), {
+    params: Promise.resolve({ id: pedido.id }),
+  })).json();
+  assert.equal(view.pedido.statusPagamento, "RECUSADO");
+  assert.equal(view.pedido.liberadoParaPreparo, false);
+  assert.equal(view.tentativa.codigoErro, "CARTAO_3DS_RECUSADO");
+  assert.equal(view.tentativa.podeTentarNovamente, true);
+  assert.equal(view.desafio3dsUrl, undefined);
+  const stored = await prisma.tentativaPagamento.findUniqueOrThrow({ where: { id: attempt.id } });
+  assert.equal(stored.encerrada, true);
+  assert.equal(stored.orderId, snapshot.id);
+  assert.equal(stored.chaveProvedor, attempt.chaveProvedor);
+  await processPayment(cliente.id, pedido.id, card, key);
+  assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+
+  respond({ ...external(pedido, "processed", "accredited"), id: "ORD01JP84C939T20S0P1DN382FQ7K" });
+  const nextKey = randomUUID();
+  await Promise.all([processPayment(cliente.id, pedido.id, card, nextKey), processPayment(cliente.id, pedido.id, card, nextKey)]);
+  assert.equal(calls.filter(call => call.init.method === "POST").length, 2);
+  assert.equal(await prisma.tentativaPagamento.count({ where: { pedidoId: pedido.id } }), 2);
+  assert.equal((await paymentView(cliente.id, pedido.id)).pedido.statusPagamento, "APROVADO");
 });
 test("timeout conserva chave; retry repete o mesmo payload sem nova tentativa", async () => {
   const pedido = await order(), key = randomUUID();

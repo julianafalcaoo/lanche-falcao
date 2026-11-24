@@ -33,3 +33,11 @@ export function paymentError(payment: PaymentDraft, totalCentavos: number): stri
   }
   return "";
 }
+
+export function paymentSelection(payment: PaymentDraft): PaymentSelection | null {
+  const { formaPagamento, precisaTroco, trocoValor } = payment;
+  if (formaPagamento === null) return null;
+  return formaPagamento === "DINHEIRO"
+    ? { formaPagamento, precisaTroco, trocoParaCentavos: precisaTroco ? reaisToCentavos(trocoValor) : null }
+    : { formaPagamento };
+}

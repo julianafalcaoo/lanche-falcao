@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { createHmac, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { beforeEach, after, test } from "node:test";
+import { promisify } from "node:util";
 import { prisma } from "../src/lib/prisma.ts";
 import { criarPedido } from "../src/server/pedidos/service.ts";
 import { processPayment, paymentView } from "../src/server/mercado-pago/service.ts";
@@ -14,7 +16,8 @@ if(!["localhost","127.0.0.1","[::1]"].includes(url.hostname)||url.port!=="5433"|
 let cliente, pedido, attempt, remote, calls, jobs, sequence=0;
 const secret="isolated-webhook-secret";
 beforeEach(async t=>{
-  for(const [key,value] of Object.entries({MERCADO_PAGO_AMBIENTE:"test",MERCADO_PAGO_ACCESS_TOKEN:"isolated-access",MERCADO_PAGO_PUBLIC_KEY:"isolated-public",MERCADO_PAGO_WEBHOOK_SECRET:secret})) {
+  const fingerprint = createHash("sha256").update(JSON.stringify(["test", "isolated-access", "isolated-public"])).digest("hex");
+  for(const [key,value] of Object.entries({MERCADO_PAGO_AMBIENTE:"test",MERCADO_PAGO_ACCESS_TOKEN:"isolated-access",MERCADO_PAGO_PUBLIC_KEY:"isolated-public",MERCADO_PAGO_WEBHOOK_SECRET:secret,MERCADO_PAGO_CREDENTIAL_PAIR_SHA256:fingerprint})) {
     const previous=process.env[key]; process.env[key]=value;
     t.after(()=>{if(previous===undefined) delete process.env[key]; else process.env[key]=previous;});
   }
@@ -28,10 +31,10 @@ beforeEach(async t=>{
 });
 after(()=>prisma.$disconnect());
 const order=()=>prisma.pedido.findUniqueOrThrow({where:{id:pedido.id}});
-function notification({requestId=randomUUID(),hash,body}={}) {
+function notification({requestId=randomUUID(),orderId=attempt.orderId,hash,body}={}) {
   const ts=String(Math.floor(Date.now()/1000));
-  const v1=hash??createHmac("sha256",secret).update(`id:${attempt.orderId};request-id:${requestId};ts:${ts};`).digest("hex");
-  return new Request(`http://localhost/api/webhooks/mercado-pago?data.id=${attempt.orderId}&type=order`,{method:"POST",headers:{"content-type":"application/json","x-request-id":requestId,"x-signature":`ts=${ts},v1=${v1}`},body:JSON.stringify(body??{type:"order",data:{id:attempt.orderId}})});
+  const v1=hash??createHmac("sha256",secret).update(`id:${orderId};request-id:${requestId};ts:${ts};`).digest("hex");
+  return new Request(`http://localhost/api/webhooks/mercado-pago?data.id=${orderId}&type=order`,{method:"POST",headers:{"content-type":"application/json","x-request-id":requestId,"x-signature":`ts=${ts},v1=${v1}`},body:JSON.stringify(body??{type:"order",data:{id:orderId}})});
 }
 const receive=req=>receiveOrderWebhook(req,job=>jobs.push(job));
 const drain=async()=>{for(const job of jobs.splice(0)) await job();};
@@ -47,11 +50,102 @@ test("webhook persiste antes do ACK e aplica consulta autoritativa em transaçã
   await drain();assert.equal((await order()).statusPagamento,"APROVADO");
   assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:{not:null}}}),1);
 });
-test("upserts e workers concorrentes deduplicam uma mesma entrega no PostgreSQL",async()=>{
-  const req=notification();const responses=await Promise.all(Array.from({length:8},()=>receive(req.clone())));
-  assert.ok(responses.every(response=>response.status===200));
+for (const batchSize of [8, 24]) test(`${batchSize} entregas e workers concorrentes deduplicam o recibo`,async()=>{
+  const req=notification();
+  const responses=await Promise.all(Array.from({length:batchSize},()=>receive(req.clone())));
+  assert.deepEqual(responses.map(response=>response.status),Array(batchSize).fill(200));
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId}}),1);
+  assert.equal((await order()).statusPagamento,"PENDENTE");
+  assert.equal(calls.length,0);
   await Promise.all(jobs.splice(0).map(job=>job()));
-  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId}}),1);assert.equal(calls.length,1);
+  const receipt=await prisma.webhookOrder.findFirstOrThrow({where:{orderId:attempt.orderId}});
+  assert.ok(receipt.processadoEm);
+  assert.equal(receipt.tentativas,1);
+  assert.equal(calls.length,1);
+  assert.equal((await order()).statusPagamento,"APROVADO");
+  assert.equal(await prisma.tentativaPagamento.count({where:{pedidoId:pedido.id}}),1);
+  assert.equal((await receive(req.clone())).status,200);
+  await drain();
+  assert.deepEqual(await prisma.webhookOrder.findUniqueOrThrow({where:{id:receipt.id}}),receipt);
+  assert.equal(calls.length,1);
+});
+test("24 entregas em dois processos persistem um recibo recuperável pela fila",async()=>{
+  const req=notification();
+  const fixture=JSON.stringify({url:req.url,headers:[...req.headers],body:await req.text()});
+  const worker=`
+    import { receiveOrderWebhook } from "./src/server/mercado-pago/webhook.ts";
+    import { prisma } from "./src/lib/prisma.ts";
+    const { url, headers, body } = JSON.parse(process.env.WEBHOOK_TEST_FIXTURE);
+    try {
+      const deliveries = Array.from({ length: 12 }, () =>
+        receiveOrderWebhook(new Request(url, { method: "POST", headers, body }), () => {}));
+      console.log(JSON.stringify((await Promise.all(deliveries)).map(response => response.status)));
+    } finally {
+      await prisma.$disconnect();
+    }
+  `;
+  const run=()=>promisify(execFile)(process.execPath,["--conditions=react-server","--input-type=module","-e",worker],{
+    env:{...process.env,WEBHOOK_TEST_FIXTURE:fixture,DATABASE_POOL_MAX:"3"},timeout:30000,
+  });
+  const results=await Promise.all([run(),run()]);
+  assert.deepEqual(results.flatMap(({stdout})=>JSON.parse(stdout)),Array(24).fill(200));
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:null}}),1);
+  assert.equal((await order()).statusPagamento,"PENDENTE");
+  assert.equal(calls.length,0);
+  await prisma.tentativaPagamento.updateMany({data:{reconciliadaEm:new Date()}});
+  assert.deepEqual(await reconciliationBatch(),{tentativasConsultadas:0,notificacoesSelecionadas:1});
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:{not:null},tentativas:1}}),1);
+  assert.equal((await order()).statusPagamento,"APROVADO");
+  assert.equal(await prisma.tentativaPagamento.count({where:{pedidoId:pedido.id}}),1);
+  assert.equal(calls.length,1);
+});
+test("eventos assinados diferentes preservam recibos distintos por Order",async t=>{
+  const other=(await criarPedido(cliente.id,randomUUID(),{tipo:"RETIRADA",formaPagamento:"PIX",itens:[{productId:"coxinha-frango",quantity:2}]})).pedido;
+  const otherOrderId=`ORD${randomUUID().replaceAll("-","")}`;
+  await prisma.tentativaPagamento.create({data:{
+    pedidoId:other.id,chaveCliente:randomUUID(),chaveProvedor:randomUUID(),requisicaoHash:"c".repeat(64),
+    orderId:otherOrderId,statusLocal:"PENDENTE",metodoExterno:"pix",tipoMetodoExterno:"bank_transfer",envios:1,
+  }});
+  const otherRemote={...remote,id:otherOrderId,external_reference:other.id};
+  t.mock.method(globalThis,"fetch",async (url,init)=>{
+    assert.equal(init.method,undefined);
+    const requested=new URL(url).pathname.split("/").at(-1);
+    calls.push(requested);
+    assert.ok([attempt.orderId,otherOrderId].includes(requested));
+    return Response.json(requested===otherOrderId?otherRemote:remote);
+  });
+  const responses=await Promise.all([receive(notification()),receive(notification()),receive(notification({orderId:otherOrderId}))]);
+  assert.deepEqual(responses.map(response=>response.status),[200,200,200]);
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:null}}),2);
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:otherOrderId,processadoEm:null}}),1);
+  assert.equal((await order()).statusPagamento,"PENDENTE");
+  assert.equal(calls.length,0);
+  await drain();
+  for (const [orderId,pedidoId,receipts] of [[attempt.orderId,pedido.id,2],[otherOrderId,other.id,1]]) {
+    assert.equal(await prisma.webhookOrder.count({where:{orderId,processadoEm:{not:null}}}),receipts);
+    assert.equal(await prisma.tentativaPagamento.count({where:{pedidoId}}),1);
+    assert.equal((await prisma.pedido.findUniqueOrThrow({where:{id:pedidoId}})).statusPagamento,"APROVADO");
+    assert.ok(calls.includes(orderId));
+  }
+});
+test("rejeição de inserção no PostgreSQL devolve 503 e a mesma entrega pode ser repetida",async()=>{
+  const req=notification();
+  await prisma.$executeRaw`ALTER TABLE "WebhookOrder" ADD CONSTRAINT "fixture_receipt_write_failure" CHECK ("tentativas" > 0) NOT VALID`;
+  try {
+    const response=await receive(req.clone());
+    assert.equal(response.status,503);
+    assert.equal((await response.json()).erro,"SERVICO_INDISPONIVEL");
+    assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId}}),0);
+    assert.equal(jobs.length,0);
+    assert.equal(calls.length,0);
+    assert.equal((await order()).statusPagamento,"PENDENTE");
+  } finally {
+    await prisma.$executeRaw`ALTER TABLE "WebhookOrder" DROP CONSTRAINT "fixture_receipt_write_failure"`;
+  }
+  assert.equal((await receive(req.clone())).status,200);
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:null}}),1);
+  await drain();
+  assert.equal(await prisma.webhookOrder.count({where:{orderId:attempt.orderId,processadoEm:{not:null}}}),1);
   assert.equal((await order()).statusPagamento,"APROVADO");
 });
 test("reserva real serializa webhook e consulta manual sem manter lock na rede",async t=>{

@@ -27,19 +27,21 @@ export async function applyOrderSnapshot(attemptId: string, lease: Date, raw: un
       await tx.tentativaPagamento.update({ where: { id: attemptId }, data: { bloqueadaAte: null, reconciliadaEm: new Date(), codigoErro: "ESTADO_REGRESSIVO" } });
       return;
     }
-    const { localStatus, ...data } = result;
-    await tx.tentativaPagamento.update({ where: { id: attemptId }, data: { ...data, statusLocal: localStatus, bloqueadaAte: null, codigoErro: null, reconciliadaEm: new Date() } });
+    const { localStatus, desafio3dsUrl, ...data } = result;
+    await tx.tentativaPagamento.update({ where: { id: attemptId }, data: { ...data, statusLocal: localStatus, bloqueadaAte: null, reconciliadaEm: new Date() } });
     const history = await tx.tentativaPagamento.findMany({ where: { pedidoId: pedido.id }, orderBy: [{ criadoEm: "asc" }, { id: "asc" }], select: { statusLocal: true } });
     const statusPagamento = aggregateStatus(history.map(row => row.statusLocal), pedido.statusPagamento as PaymentStatus);
     // O índice de tentativa ativa e as chaves existentes permanecem intactos.
     // Um estado pós-pagamento, inclusive contestação, não libera nova cobrança.
     if (hasPaid(pedido.statusPagamento) && !hasPaid(statusPagamento)) throw new ProviderError("ESTADO_REGRESSIVO");
     await tx.pedido.update({ where: { id: pedido.id }, data: { statusPagamento } });
+    // A URL de autenticação tem vida curta e não deve ficar persistida.
+    return desafio3dsUrl ? { attemptId, url: desafio3dsUrl } : undefined;
   });
 }
 
 /** Só consulta: nunca cria Order ou gira chave. Também consulta tentativas encerradas. */
-export async function reconcileAttempt(attemptId: string) {
+export async function reconcileAttempt(attemptId: string, minimumIntervalMs = 0) {
   paymentConfig();
   const lease = new Date(Date.now() + 60000);
   const attempt = await prisma.$transaction(async tx => {
@@ -47,11 +49,13 @@ export async function reconcileAttempt(attemptId: string) {
     await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${reference.pedidoId}::uuid FOR UPDATE`;
     const current = await tx.tentativaPagamento.findUniqueOrThrow({ where: { id: attemptId } });
     if (!current.orderId) throw new ProviderError("ORDER_NAO_VINCULADA");
+    if (minimumIntervalMs && (current.encerrada || Date.now() - (current.reconciliadaEm ?? current.criadoEm).getTime() < minimumIntervalMs)) return null;
     if (current.bloqueadaAte && current.bloqueadaAte > new Date()) throw new ProviderError("RECONCILIACAO_OCUPADA", false, 60);
     return tx.tentativaPagamento.update({ where: { id: attemptId }, data: { bloqueadaAte: lease } });
   });
+  if (!attempt) return;
   try {
-    await applyOrderSnapshot(attemptId, lease, await mercadoPago.get(attempt.orderId!));
+    return await applyOrderSnapshot(attemptId, lease, await mercadoPago.get(attempt.orderId!));
   } catch (error) {
     const failure = error instanceof ProviderError ? error : new ProviderError("RESPOSTA_INCERTA");
     await prisma.tentativaPagamento.updateMany({ where: { id: attemptId, bloqueadaAte: lease }, data: { codigoErro: failure.code, bloqueadaAte: new Date(Date.now() + failure.waitSeconds * 1000), reconciliadaEm: new Date() } });

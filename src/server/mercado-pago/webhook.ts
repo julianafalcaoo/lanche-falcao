@@ -43,7 +43,12 @@ export async function receiveOrderWebhook(request: Request, schedule: (work: () 
       throw new PedidoError("EVENTO_INVALIDO", 400, "Notificação de Order inválida.");
     }
     // O corpo não é assinado integralmente: status, action, data.version e ID do evento NÃO comandam a escrita.
-    await prisma.webhookOrder.upsert({ where: { id: signed.receiptId }, create: { id: signed.receiptId, orderId: signed.orderId }, update: {} });
+    const receipt = { id: signed.receiptId, orderId: signed.orderId };
+    // PostgreSQL resolve o conflito de inserção entre processos sem reescrever o recibo.
+    const { count } = await prisma.webhookOrder.createMany({ data: receipt, skipDuplicates: true });
+    if (count === 0) {
+      await prisma.webhookOrder.findUniqueOrThrow({ where: receipt, select: { id: true } });
+    }
     schedule(async () => { await processOrderWebhook(signed.receiptId); });
     return pedidoJson({ recebido: true }); // ACK somente depois da gravação durável.
   } catch (error) { return pedidoFailure(error); }

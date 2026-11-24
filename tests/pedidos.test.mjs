@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { after, beforeEach, test } from "node:test";
 import { prisma } from "../src/lib/prisma.ts";
 import { products } from "../src/data/menu.ts";
-import { newToken, sessionCookieName, tokenHash } from "../src/server/auth/session.ts";
+import { checkoutScopeForCliente, newToken, sessionCookieName, tokenHash } from "../src/server/auth/session.ts";
 import { POST, GET as list } from "../src/app/api/pedidos/route.ts";
-import { GET as detail } from "../src/app/api/pedidos/[id]/route.ts";
+import { GET as detail, PATCH as patchPayment } from "../src/app/api/pedidos/[id]/route.ts";
 import { parsePedido } from "../src/server/pedidos/validation.ts";
 
 const database = new URL(process.env.DATABASE_URL).pathname.slice(1);
@@ -49,11 +50,53 @@ async function created(body = pickup, key = randomUUID(), cookie = a.cookie) {
 }
 async function empty() { assert.equal(await prisma.pedido.count(), 0); assert.equal(await prisma.itemPedido.count(), 0); }
 
+function changePayment(id, body, cookie = a.cookie, origin = "http://localhost") {
+  return patchPayment(new Request(`http://localhost/api/pedidos/${id}`, {
+    method: "PATCH", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { params: Promise.resolve({ id }) });
+}
+
+test("troca antes da cobrança preserva a entrega, a taxa e a chave original", async () => {
+  const key = randomUUID();
+  const original = await created(delivery, key);
+  const card = { formaPagamento: "CARTAO" };
+  assert.equal((await changePayment(original.id, { ...card, totalCentavos: 1 })).status, 422);
+  assert.equal((await changePayment(original.id, card, b.cookie)).status, 404);
+  assert.equal((await changePayment(original.id, card, "")).status, 401);
+  assert.equal((await changePayment(original.id, card, a.cookie, "http://outra-origem.invalid")).status, 403);
+  const changed = await changePayment(original.id, card);
+  assert.equal(changed.status, 200);
+  const { pedido } = await changed.json();
+  assert.deepEqual({ ...pedido, atualizadoEm: original.atualizadoEm }, { ...original, formaPagamento: "CARTAO" });
+  assert.deepEqual((await (await changePayment(original.id, card)).json()).pedido, pedido);
+  assert.equal((await changePayment(original.id, { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 1099 })).status, 422);
+  const cash = await changePayment(original.id, { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 2000 });
+  assert.equal(cash.status, 200);
+  const replay = await post(delivery, key);
+  assert.equal(replay.status, 200);
+  const recovered = (await replay.json()).pedido;
+  assert.deepEqual(recovered, (await cash.json()).pedido);
+  assert.equal(recovered.totalCentavos, 1100);
+  assert.equal(recovered.taxaEntregaCentavos, 300);
+  assert.equal(recovered.trocoParaCentavos - recovered.totalCentavos, 900);
+  assert.equal(await prisma.pedido.count(), 1);
+});
+
+test("criação que perdeu a resposta não é repetida com a sessão de outro cliente", async () => {
+  const key = randomUUID();
+  const headers = { "Checkout-Scope": checkoutScopeForCliente(a.id) };
+  assert.equal((await post(delivery, key, a.cookie, headers)).status, 201);
+  assert.equal((await post(delivery, key, b.cookie, headers)).status, 409);
+  assert.equal((await post(delivery, key, a.cookie, headers)).status, 200);
+  assert.equal(await prisma.pedido.count(), 1);
+});
+
 test("retirada autenticada cria snapshots reais, status inicial e centavos inteiros", async () => {
   const pedido = await created();
   assert.equal(pedido.tipo, "RETIRADA");
   assert.equal(pedido.status, "PEDIDO_RECEBIDO");
   assert.equal(pedido.subtotalCentavos, 800);
+  assert.equal(pedido.taxaEntregaCentavos, 0);
   assert.equal(pedido.totalCentavos, 800);
   assert.deepEqual(pedido.itens, [{ produtoId: "coxinha-frango", nomeProduto: "Coxinha de frango", precoUnitarioCentavos: 400, quantidade: 2, subtotalCentavos: 800 }]);
   assert.equal("endereco" in pedido, false);
@@ -74,6 +117,9 @@ test("múltiplos produtos somam subtotais e total sem taxa ou desconto", async (
 test("entrega normaliza CEP/UF e salva endereço no pedido, sem alterar cliente", async () => {
   const before = await prisma.cliente.findUnique({ where: { id: a.id } });
   const pedido = await created(delivery);
+  assert.equal(pedido.subtotalCentavos, 800);
+  assert.equal(pedido.taxaEntregaCentavos, 300);
+  assert.equal(pedido.totalCentavos, 1100);
   assert.deepEqual(pedido.endereco, { ...address, postalCode: "69000000", street: "Rua de teste", state: "AM" });
   assert.deepEqual(await prisma.cliente.findUnique({ where: { id: a.id } }), before);
   const response = await get(pedido.id);
@@ -136,7 +182,7 @@ for (const [field, value] of [["street", " "], ["number", ""], ["neighborhood", 
   });
 }
 
-for (const [field, value] of [["clienteId", "outro"], ["status", "ENTREGUE"], ["totalCentavos", 1], ["subtotalCentavos", 1]]) {
+for (const [field, value] of [["clienteId", "outro"], ["status", "ENTREGUE"], ["totalCentavos", 1], ["subtotalCentavos", 1], ["taxaEntregaCentavos", 0]]) {
   test(`rejeita manipulação de ${field}`, async () => {
     assert.equal((await post({ ...pickup, [field]: value })).status, 422);
     await empty();
@@ -331,6 +377,62 @@ test("troco usa total real; retry preserva snapshot após mudança de preço", a
   product.priceInCents = 500;
   assert.deepEqual((await (await post(body, key)).json()).pedido, pedido);
   assert.equal((await post(body)).status, 422);
+});
+
+test("entrega em dinheiro valida o troco pelo total com taxa", async () => {
+  const body = { ...delivery, formaPagamento: "DINHEIRO", precisaTroco: true };
+  const insufficient = await post({ ...body, trocoParaCentavos: 1099 });
+  assert.equal(insufficient.status, 422);
+  assert.equal((await insufficient.json()).erro, "TROCO_INSUFICIENTE");
+  await empty();
+  const exact = await created({ ...body, trocoParaCentavos: 1100 });
+  assert.equal(exact.totalCentavos, exact.trocoParaCentavos);
+  const pedido = await created({ ...body, trocoParaCentavos: 2000 });
+  assert.equal(pedido.trocoParaCentavos - pedido.totalCentavos, 900);
+});
+
+test("entrega histórica conserva taxa zero e valor original ao retomar a mesma chave", async () => {
+  const key = randomUUID();
+  const requisicaoHash = createHash("sha256").update(JSON.stringify(parsePedido(delivery))).digest("hex");
+  const legacy = await prisma.pedido.create({ data: {
+    clienteId: a.id, tipo: "ENTREGA", formaPagamento: "PIX", subtotalCentavos: 800, totalCentavos: 800,
+    chaveIdempotencia: key, requisicaoHash,
+    entregaCep: "69000000", entregaRua: "Rua de teste", entregaNumero: "10", entregaBairro: "Centro",
+    entregaCidade: "Manaus", entregaUf: "AM",
+  } });
+  const response = await post(delivery, key);
+  assert.equal(response.status, 200);
+  const { pedido } = await response.json();
+  assert.equal(pedido.id, legacy.id);
+  assert.equal(pedido.taxaEntregaCentavos, 0);
+  assert.equal(pedido.totalCentavos, 800);
+  assert.equal(await prisma.pedido.count(), 1);
+});
+
+test("migration inicializa com taxa zero uma entrega gravada antes da nova coluna", async () => {
+  const migration = await readFile(new URL("../prisma/migrations/20261122010000_taxa_entrega/migration.sql", import.meta.url), "utf8");
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`CREATE TEMP TABLE "Pedido" (
+      "tipo" TEXT NOT NULL, "subtotalCentavos" INTEGER NOT NULL, "totalCentavos" INTEGER NOT NULL,
+      CONSTRAINT "Pedido_valores_check" CHECK ("subtotalCentavos" > 0 AND "totalCentavos" = "subtotalCentavos")
+    ) ON COMMIT DROP`;
+    await tx.$executeRaw`INSERT INTO pg_temp."Pedido" VALUES ('ENTREGA', 800, 800)`;
+    await tx.$executeRawUnsafe(migration.replace('ALTER TABLE "Pedido"', 'ALTER TABLE pg_temp."Pedido"'));
+    const rows = await tx.$queryRaw`SELECT "subtotalCentavos", "taxaEntregaCentavos", "totalCentavos" FROM pg_temp."Pedido"`;
+    assert.deepEqual(rows, [{ subtotalCentavos: 800, taxaEntregaCentavos: 0, totalCentavos: 800 }]);
+  });
+});
+
+test("banco rejeita taxa em retirada, taxa negativa e soma inconsistente em entrega", async () => {
+  const pickupOrder = await created();
+  const deliveryOrder = await created(delivery);
+  for (const [id, data] of [
+    [pickupOrder.id, { taxaEntregaCentavos: 300, totalCentavos: 1100 }],
+    [deliveryOrder.id, { taxaEntregaCentavos: -1, totalCentavos: 799 }],
+    [deliveryOrder.id, { totalCentavos: 800 }],
+  ]) {
+    await assert.rejects(prisma.pedido.update({ where: { id }, data }));
+  }
 });
 test("CHECK de pagamento protege combinações inválidas e permite legado sem forma", async () => {
   const pedido = await created();
