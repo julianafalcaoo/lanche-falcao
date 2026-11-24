@@ -54,7 +54,7 @@ export function CheckoutPage({ cardAvailable, onContinue }: { cardAvailable: boo
       return;
     }
     if (!cardAvailable && draft.formaPagamento === "CARTAO") {
-      setPaymentMessage("Cartão temporariamente indisponível. Escolha Pix ou dinheiro.");
+      setPaymentMessage("Cartão. Escolha Pix ou dinheiro.");
       return;
     }
     const paymentValidation = paymentError(draft, totalInCents);
