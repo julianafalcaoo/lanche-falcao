@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardData, CheckoutOrder, PaymentView } from "@/types/checkout-payment";
 import { emptyPayment, paymentError, reaisToCentavos } from "@/lib/payment";
+import { orderWhatsAppUrl } from "@/lib/whatsapp";
 import { CardPayment } from "./card-payment";
 import { PaymentOptions } from "./payment-options";
 import { checkoutRequest, CheckoutRequestError, validOrder } from "./payment-api";
@@ -185,6 +186,8 @@ export function PaymentStage({ order, cardAvailable, onMethodChanged, onFinish }
     }}>Alterar forma de pagamento</button>}
     {!cardBlocked && lastPayload && (!view?.tentativa || (view.tentativa.aguardando && view.tentativa.codigoErro)) && <button className={styles.primary} disabled={busy} onClick={() => void pay(lastPayload)}>Repetir mesma tentativa</button>}
     {!cardBlocked && view?.tentativa?.podeTentarNovamente && <button className={styles.primary} disabled={busy} onClick={newAttempt}>Tentar pagamento novamente</button>}
+    {(cash || (current.formaPagamento === "PIX" && approved)) &&
+      <a className={styles.primary} href={orderWhatsAppUrl(current.id)} target="_blank" rel="noopener noreferrer">Conversar pelo WhatsApp</a>}
     {(cash || approved) && <button className={styles.primary} onClick={onFinish}>Concluir pedido</button>}
     <p className={styles.error} role="alert">{error}</p>
   </section>;

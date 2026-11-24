@@ -3,6 +3,18 @@
 const id = "11111111-1111-4111-8111-111111111111";
 const qr = "pix-retornado-pelo-provedor-no-teste";
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XkAAAAASUVORK5CYII=";
+async function expectOrderContact(page: Page) {
+  const link = page.getByRole("link", { name: "Conversar pelo WhatsApp" });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  const url = new URL((await link.getAttribute("href"))!);
+  expect(url.origin + url.pathname).toBe("https://wa.me/5592994093977");
+  expect([...url.searchParams]).toEqual([["text",
+    `Olá! Fiz um pedido pelo site Lanche Falcão. Meu pedido é o #${id} e gostaria de entrar em contato com a lanchonete.`,
+  ]]);
+  expect(url.hash).toBe("");
+}
 async function setup(page: Page, production = false) {
   let currentId = id;
   let total = 800;
@@ -104,6 +116,7 @@ test("Pix pausa oculto, recupera erro e confirma automaticamente sem nova cobran
   await begin(page, "PIX");
   await expect(page.getByLabel("Pix Copia e Cola")).toHaveValue(qr);
   const consultations = () => api.requests.filter(request => request.body.consultar === true);
+  await expect(page.getByRole("link", { name: "Conversar pelo WhatsApp" })).toHaveCount(0);
   async function visibility(hidden: boolean) {
     await page.evaluate(value => {
       Object.defineProperty(document, "hidden", { configurable: true, value });
@@ -127,6 +140,7 @@ test("Pix pausa oculto, recupera erro e confirma automaticamente sem nova cobran
   api.approve();
   release();
   await expect(page.getByText("Pagamento aprovado.", { exact: true })).toBeVisible();
+  await expectOrderContact(page);
   await page.clock.fastForward(65000);
   expect(consultations()).toHaveLength(2);
   expect(api.requests.filter(request => request.path.endsWith("/pagamento") && !request.body.consultar)).toHaveLength(1);
@@ -219,6 +233,7 @@ test("dinheiro confirma pedido, preserva troco e só limpa carrinho ao concluir"
   await page.getByLabel("Troco para quanto?").fill("20,00");
   await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Pedido criado", exact: true })).toBeVisible();
+  await expectOrderContact(page);
   expect(api.requests).toHaveLength(1);
   expect(api.requests[0].body).toMatchObject({ formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 2000 });
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("lanche-falcao:cart")!))).toHaveLength(1);

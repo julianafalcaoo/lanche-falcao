@@ -13,5 +13,4 @@ export interface MenuHomeProps {
   products: readonly Product[];
   categories: readonly Category[];
   promotion?: Promotion;
-  whatsappNumber?: string;
 }

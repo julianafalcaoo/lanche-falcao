@@ -13,7 +13,7 @@ import { ProductGrid } from "./product-grid";
 import { ProductModal } from "./product-modal";
 import { EmptyProductsState } from "./empty-products-state";
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
-export function MenuHome({ products, categories, promotion, whatsappNumber }: MenuHomeProps) {
+export function MenuHome({ products, categories, promotion }: MenuHomeProps) {
   const { addItem, ready, totalQuantity } = useCart();
   const [cartNotice, setCartNotice] = useState("");
   useEffect(() => {
@@ -50,7 +50,7 @@ export function MenuHome({ products, categories, promotion, whatsappNumber }: Me
         } : undefined} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={isSearching || selectedCategory !== null} onClear={clearFilters} />}
       </section>
       <footer className="site-footer"><span>Lanche <strong>Falcão</strong></span><p>Seu momento de fazer uma pausa.</p><a href="#inicio">Voltar ao início</a></footer>
-    </main><WhatsAppButton phoneNumber={whatsappNumber} /><BottomNavigation />
+    </main><WhatsAppButton /><BottomNavigation />
     <div className={`cart-feedback${cartNotice ? " is-visible" : ""}`} role="status" aria-live="polite" aria-atomic="true">{cartNotice}</div>
     {openedProduct && <ProductModal key={openedProduct.id} product={openedProduct} onClose={() => setOpenedProductId(null)} />}
   </>;

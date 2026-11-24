@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: lanche_falcao
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: only-for-disposable-ci
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d lanche_falcao"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://ci:only-for-disposable-ci@127.0.0.1:5433/lanche_falcao
+      DIRECT_URL: postgresql://ci:only-for-disposable-ci@127.0.0.1:5433/lanche_falcao
+      MERCADO_PAGO_AMBIENTE: test
+      CHECKPOINT_DISABLE: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Gerar Prisma Client e tipos do Next.js
+        run: |
+          npm run db:generate
+          npm exec -- next typegen
+      - name: TypeScript
+        run: npm exec -- tsc --noEmit
+      - name: ESLint
+        run: npm run lint
+      - name: Testes com serviços simulados
+        run: |
+          npm run test:otp
+          npm run test:webhook
+          npm run test:payment-production
+          npm run test:deploy
+      - name: Integração com PostgreSQL
+        run: |
+          node --conditions=react-server scripts/test-auth.mjs pedidos
+          node --conditions=react-server scripts/test-auth.mjs mercado-pago
+      - name: Build de produção
+        run: npm run build
+      - name: Instalar Chromium
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Testes no navegador com APIs simuladas
+        run: npm run test:checkout
