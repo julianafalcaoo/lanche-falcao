@@ -36,16 +36,9 @@ function address(value: unknown): DeliveryAddress {
   return result;
 }
 
-export function parsePedido(value: unknown): {
-  tipo: "RETIRADA" | "ENTREGA";
-  itens: { productId: string; quantity: number }[];
-  endereco: DeliveryAddress | null;
-  formaPagamento: "PIX" | "DINHEIRO" | "CARTAO";
-  precisaTroco: boolean | null;
-  trocoParaCentavos: number | null;
-} {
+export function parsePaymentSelection(value: unknown) {
   if (!object(value)) throw new PedidoError("PEDIDO_INVALIDO", 400, "Envie um objeto JSON válido.");
-  onlyKeys(value, ["tipo", "itens", "endereco", "formaPagamento", "precisaTroco", "trocoParaCentavos"]);
+  onlyKeys(value, ["formaPagamento", "precisaTroco", "trocoParaCentavos"]);
   const formaPagamento = value.formaPagamento;
   if (formaPagamento !== "PIX" && formaPagamento !== "DINHEIRO" && formaPagamento !== "CARTAO") throw new PedidoError("PAGAMENTO_INVALIDO", 422, "Escolha PIX, DINHEIRO ou CARTAO.");
   let precisaTroco: boolean | null = null;
@@ -62,10 +55,17 @@ export function parsePedido(value: unknown): {
       throw new PedidoError("TROCO_INVALIDO", 422, "Não informe valor quando não precisar de troco.");
     }
   }
-  if (value.tipo !== "RETIRADA" && value.tipo !== "ENTREGA") throw new PedidoError("TIPO_INVALIDO", 422, "Escolha RETIRADA ou ENTREGA.");
-  if (!Array.isArray(value.itens) || !value.itens.length || value.itens.length > MAX_ITEMS) throw new PedidoError("ITENS_INVALIDOS", 422, "Informe de 1 a 100 produtos distintos.");
+  return { formaPagamento, precisaTroco, trocoParaCentavos } as const;
+}
+
+export function parsePedido(value: unknown) {
+  if (!object(value)) throw new PedidoError("PEDIDO_INVALIDO", 400, "Envie um objeto JSON válido.");
+  const { tipo, itens: rawItems, endereco, ...selection } = value;
+  const payment = parsePaymentSelection(selection);
+  if (tipo !== "RETIRADA" && tipo !== "ENTREGA") throw new PedidoError("TIPO_INVALIDO", 422, "Escolha RETIRADA ou ENTREGA.");
+  if (!Array.isArray(rawItems) || !rawItems.length || rawItems.length > MAX_ITEMS) throw new PedidoError("ITENS_INVALIDOS", 422, "Informe de 1 a 100 produtos distintos.");
   const ids = new Set<string>();
-  const itens = value.itens.map((item: unknown) => {
+  const itens = rawItems.map((item: unknown) => {
     if (!object(item)) throw new PedidoError("ITEM_INVALIDO", 422, "Informe produto e quantidade para cada item.");
     onlyKeys(item, ["productId", "quantity"]);
     if (typeof item.productId !== "string" || !/^[a-z0-9-]{1,100}$/.test(item.productId)) throw new PedidoError("PRODUTO_INVALIDO", 422, "Produto inválido.");
@@ -74,8 +74,8 @@ export function parsePedido(value: unknown): {
     ids.add(item.productId);
     return { productId: item.productId, quantity: item.quantity };
   }).sort((a, b) => a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0);
-  if (value.tipo === "RETIRADA" && value.endereco != null) throw new PedidoError("ENDERECO_INVALIDO", 422, "Não envie endereço para retirada.");
-  return { tipo: value.tipo, itens, endereco: value.tipo === "ENTREGA" ? address(value.endereco) : null, formaPagamento, precisaTroco, trocoParaCentavos };
+  if (tipo === "RETIRADA" && endereco != null) throw new PedidoError("ENDERECO_INVALIDO", 422, "Não envie endereço para retirada.");
+  return { tipo, itens, endereco: tipo === "ENTREGA" ? address(endereco) : null, ...payment } as const;
 }
 
 export function parseKey(value: string | null) {

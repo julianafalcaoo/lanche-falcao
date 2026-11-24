@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { products } from "../../data/menu.ts";
 import { prisma } from "../../lib/prisma.ts";
 import type { Prisma } from "../../generated/prisma/client.ts";
-import { PedidoError, isUuid, parsePedido } from "./validation.ts";
+import { PedidoError, isUuid, parsePaymentSelection, parsePedido } from "./validation.ts";
 import { canPrepare } from "../mercado-pago/states.ts";
 
 const select = {
@@ -77,6 +77,27 @@ export async function criarPedido(clienteId: string, key: string, body: unknown)
     }
     throw error;
   }
+}
+
+export async function alterarPagamento(clienteId: string, id: string, body: unknown) {
+  if (!isUuid(id)) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
+  return prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${id}::uuid AND "clienteId" = ${clienteId}::uuid FOR UPDATE`;
+    const pedido = await tx.pedido.findFirst({ where: { id, clienteId }, select });
+    if (!pedido) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
+    const payment = parsePaymentSelection(body);
+    const attempt = await tx.tentativaPagamento.findFirst({ where: { pedidoId: id }, select: { id: true } });
+    if (pedido.status !== "PEDIDO_RECEBIDO" || pedido.statusPagamento !== "PENDENTE" || attempt) {
+      throw new PedidoError("TROCA_PAGAMENTO_BLOQUEADA", 409, "Já existe um pagamento para este pedido. Consulte a situação antes de continuar.");
+    }
+    if (payment.formaPagamento === "CARTAO" && process.env.MERCADO_PAGO_AMBIENTE?.trim() !== "test") {
+      throw new PedidoError("CARTAO_INDISPONIVEL", 503, "Cartão temporariamente indisponível.");
+    }
+    if (payment.trocoParaCentavos !== null && payment.trocoParaCentavos < pedido.totalCentavos) {
+      throw new PedidoError("TROCO_INSUFICIENTE", 422, "O valor para troco deve ser maior ou igual ao total do pedido.");
+    }
+    return publicPedido(await tx.pedido.update({ where: { id }, data: payment, select }));
+  });
 }
 
 export async function consultarPedido(clienteId: string, id: string) {

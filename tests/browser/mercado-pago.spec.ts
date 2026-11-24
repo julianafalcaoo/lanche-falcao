@@ -10,6 +10,7 @@ async function setup(page: Page, production = false) {
   const requests: { path: string; body: Record<string, unknown>; key: string | undefined }[] = [];
   let method = "PIX", status = "PENDENTE", hasAttempt = false, failOrder = false, failPayment = false, cardRejected = false;
   let pause: Promise<void> | undefined;
+  let pauseConsult: Promise<void> | undefined;
   await page.addInitScript(() => {
     if (!localStorage.getItem("lanche-falcao:cart")) localStorage.setItem("lanche-falcao:cart", JSON.stringify([{ productId: "coxinha-frango", quantity: 2 }]));
     if (!sessionStorage.getItem("lanche-falcao:checkout")) sessionStorage.setItem("lanche-falcao:checkout", JSON.stringify({ orderType: "pickup", address: { postalCode: "", street: "", number: "", neighborhood: "", city: "", state: "", complement: "", reference: "" } }));
@@ -39,6 +40,13 @@ async function setup(page: Page, production = false) {
     if (!url.pathname.startsWith("/api/")) return route.continue();
     if (url.pathname === "/api/auth/me") return route.fulfill({ json: { autenticado: true, cliente: { nome: "Cliente teste", telefone: "+5592999999999" } } });
     if (url.pathname === "/api/pagamentos/config") return route.fulfill({ json: { publicKey: "mock-public", ambiente: production ? "production" : "test", payerEmail: production ? null : "test@testuser.com" } });
+    if (route.request().method() === "PATCH" && url.pathname === `/api/pedidos/${currentId}`) {
+      const body = route.request().postDataJSON();
+      requests.push({ path: url.pathname, body, key: undefined });
+      if (hasAttempt || status !== "PENDENTE") return route.fulfill({ status: 409, json: { mensagem: "Já existe um pagamento para este pedido." } });
+      method = body.formaPagamento;
+      return route.fulfill({ json: { pedido: order() } });
+    }
     if (route.request().method() === "POST") {
       const body = route.request().postDataJSON();
       requests.push({ path: url.pathname, body, key: route.request().headers()["idempotency-key"] });
@@ -57,6 +65,7 @@ async function setup(page: Page, production = false) {
       }
       if (url.pathname.endsWith("/pagamento")) {
         if (failPayment) { failPayment = false; return route.abort(); }
+        if (body.consultar) { await pauseConsult; return route.fulfill({ json: view() }); }
         hasAttempt = true;
         if (method === "CARTAO" && !body.consultar) status = cardRejected ? "RECUSADO" : "APROVADO";
         return route.fulfill({ json: view() });
@@ -66,13 +75,74 @@ async function setup(page: Page, production = false) {
     if (url.pathname.endsWith("/pagamento")) return route.fulfill({ json: view() });
     return route.abort();
   });
-  return { requests, approve: () => { status = "APROVADO"; }, pause: (value: Promise<void>) => { pause = value; }, failOrder: () => { failOrder = true; }, failPayment: () => { failPayment = true; }, rejectCard: (value: boolean) => { cardRejected = value; } };
+  return { requests, approve: () => { status = "APROVADO"; }, pause: (value: Promise<void>) => { pause = value; }, pauseConsult: (value: Promise<void>) => { pauseConsult = value; }, failOrder: () => { failOrder = true; }, failPayment: () => { failPayment = true; }, rejectCard: (value: boolean) => { cardRejected = value; } };
 }
 async function begin(page: Page, method: string) {
   await page.goto("/checkout");
   await page.getByRole("radio", { name: method, exact: true }).check();
   await page.getByRole("button", { name: "Finalizar pedido", exact: true }).click();
 }
+test("troca para dinheiro no mesmo pedido sem gerar Pix e retoma após recarregar", async ({ page }) => {
+  const api = await setup(page, true);
+  await begin(page, "PIX");
+  await expect(page.getByLabel("E-mail do comprador")).toBeVisible();
+  await page.getByRole("button", { name: "Alterar forma de pagamento" }).click();
+  await page.getByRole("radio", { name: "Dinheiro" }).check();
+  await page.getByRole("button", { name: "Confirmar forma de pagamento" }).click();
+  await expect(page.getByText("Pagamento em dinheiro no recebimento/retirada.")).toBeVisible();
+  await expect(page.getByText(/Total: R\$\s*8,00/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pedido criado" })).toBeVisible();
+  expect(api.requests.filter(request => request.path === "/api/pedidos")).toHaveLength(1);
+  expect(api.requests.find(request => request.path === `/api/pedidos/${id}`)?.body.formaPagamento).toBe("DINHEIRO");
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento"))).toHaveLength(0);
+});
+
+test("Pix pausa oculto, recupera erro e confirma automaticamente sem nova cobrança", async ({ page }) => {
+  await page.clock.install();
+  const api = await setup(page);
+  await begin(page, "PIX");
+  await expect(page.getByLabel("Pix Copia e Cola")).toHaveValue(qr);
+  const consultations = () => api.requests.filter(request => request.body.consultar === true);
+  async function visibility(hidden: boolean) {
+    await page.evaluate(value => {
+      Object.defineProperty(document, "hidden", { configurable: true, value });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, hidden);
+  }
+  await visibility(true);
+  await page.clock.fastForward(20000);
+  expect(consultations()).toHaveLength(0);
+  api.failPayment();
+  await visibility(false);
+  await page.clock.runFor(10);
+  await expect(page.getByText(/A resposta não chegou/)).toBeVisible();
+  expect(consultations()).toHaveLength(1);
+  let release!: () => void;
+  api.pauseConsult(new Promise<void>(resolve => { release = resolve; }));
+  await page.clock.fastForward(25000);
+  await expect.poll(() => consultations().length).toBe(2);
+  await page.clock.fastForward(13000);
+  expect(consultations()).toHaveLength(2);
+  api.approve();
+  release();
+  await expect(page.getByText("Pagamento aprovado.", { exact: true })).toBeVisible();
+  await page.clock.fastForward(65000);
+  expect(consultations()).toHaveLength(2);
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento") && !request.body.consultar)).toHaveLength(1);
+});
+test("Pix ativo volta à seleção com a troca bloqueada e pode ser retomado", async ({ page }) => {
+  const api = await setup(page);
+  await begin(page, "PIX");
+  await expect(page.getByLabel("Pix Copia e Cola")).toHaveValue(qr);
+  await page.getByRole("button", { name: "Alterar forma de pagamento" }).click();
+  await expect(page.getByText(/troca está indisponível/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: "Dinheiro" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Voltar ao pagamento" }).click();
+  await expect(page.getByLabel("Pix Copia e Cola")).toHaveValue(qr);
+  expect(api.requests.filter(request => request.path === "/api/pedidos")).toHaveLength(1);
+  expect(api.requests.filter(request => request.path.endsWith("/pagamento") && !request.body.consultar)).toHaveLength(1);
+});
 test("Pix de produção solicita e-mail e não gera cobrança automaticamente", async ({ page }) => {
   const api = await setup(page, true);
   await begin(page, "PIX");

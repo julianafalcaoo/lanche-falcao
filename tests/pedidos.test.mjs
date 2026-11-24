@@ -5,7 +5,7 @@ import { prisma } from "../src/lib/prisma.ts";
 import { products } from "../src/data/menu.ts";
 import { newToken, sessionCookieName, tokenHash } from "../src/server/auth/session.ts";
 import { POST, GET as list } from "../src/app/api/pedidos/route.ts";
-import { GET as detail } from "../src/app/api/pedidos/[id]/route.ts";
+import { GET as detail, PATCH } from "../src/app/api/pedidos/[id]/route.ts";
 import { parsePedido } from "../src/server/pedidos/validation.ts";
 
 const database = new URL(process.env.DATABASE_URL).pathname.slice(1);
@@ -48,6 +48,48 @@ async function created(body = pickup, key = randomUUID(), cookie = a.cookie) {
   return (await response.json()).pedido;
 }
 async function empty() { assert.equal(await prisma.pedido.count(), 0); assert.equal(await prisma.itemPedido.count(), 0); }
+
+function changePayment(id, body, cookie = a.cookie) {
+  return PATCH(new Request(`http://localhost/api/pedidos/${id}`, {
+    method: "PATCH", headers: { origin: "http://localhost", "content-type": "application/json", cookie },
+    body: JSON.stringify(body),
+  }), { params: Promise.resolve({ id }) });
+}
+
+test("troca para dinheiro no mesmo pedido preserva o snapshot e a chave original", async () => {
+  const key = randomUUID();
+  const pedido = await created(delivery, key);
+  assert.equal((await changePayment(pedido.id, { formaPagamento: "DINHEIRO", precisaTroco: false }, b.cookie)).status, 404);
+  assert.equal((await changePayment(pedido.id, { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 799 })).status, 422);
+  const response = await changePayment(pedido.id, { formaPagamento: "DINHEIRO", precisaTroco: true, trocoParaCentavos: 1000 });
+  assert.equal(response.status, 200);
+  const changed = (await response.json()).pedido;
+  assert.equal(changed.id, pedido.id);
+  assert.equal(changed.formaPagamento, "DINHEIRO");
+  assert.equal(changed.trocoParaCentavos, 1000);
+  assert.equal(changed.totalCentavos, pedido.totalCentavos);
+  assert.deepEqual(changed.endereco, pedido.endereco);
+  assert.deepEqual(changed.itens, pedido.itens);
+  assert.equal((await post(delivery, key)).status, 200);
+  assert.equal(await prisma.pedido.count(), 1);
+});
+
+test("troca preserva tentativas incertas, ativas e pagamentos aprovados", async () => {
+  const pedido = await created();
+  const money = { formaPagamento: "DINHEIRO", precisaTroco: false };
+  const attempt = await prisma.tentativaPagamento.create({ data: {
+    pedidoId: pedido.id, chaveCliente: randomUUID(), chaveProvedor: randomUUID(), requisicaoHash: "0".repeat(64),
+    statusLocal: "PENDENTE",
+  } });
+  assert.equal((await changePayment(pedido.id, money)).status, 409);
+  const orderId = "ORDproduction000000000001";
+  await prisma.tentativaPagamento.update({ where: { id: attempt.id }, data: { orderId } });
+  assert.equal((await changePayment(pedido.id, money)).status, 409);
+  await prisma.pedido.update({ where: { id: pedido.id }, data: { statusPagamento: "APROVADO" } });
+  assert.equal((await changePayment(pedido.id, money)).status, 409);
+  assert.equal((await prisma.tentativaPagamento.findUnique({ where: { id: attempt.id } })).orderId, orderId);
+  assert.equal((await prisma.pedido.findUnique({ where: { id: pedido.id } })).formaPagamento, "PIX");
+});
 
 test("retirada autenticada cria snapshots reais, status inicial e centavos inteiros", async () => {
   const pedido = await created();

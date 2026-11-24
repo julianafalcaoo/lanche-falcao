@@ -85,7 +85,7 @@ export function CheckoutPage({ cardAvailable, onContinue }: { cardAvailable: boo
     <Link href="/carrinho" className={styles.back}>← Voltar ao carrinho</Link>
     <h1>Checkout</h1>
     {!ready || !draftReady || !flow.ready ? <p role="status">Carregando checkout…</p> : flow.request && session.status === "authenticated" ? <>
-      {flow.order ? <PaymentStage key={flow.order.id} order={flow.order} cardAvailable={cardAvailable} onFinish={() => {
+      {flow.order ? <PaymentStage key={`${flow.order.id}:${flow.order.formaPagamento}`} order={flow.order} cardAvailable={cardAvailable} onMethodChanged={flow.setOrder} onFinish={() => {
         // Preserva itens adicionados/alterados depois da criação deste pedido.
         try {
           const persistedItems = parseCart(localStorage.getItem(CART_STORAGE_KEY));

@@ -50,6 +50,9 @@ export async function processPayment(clienteId: string, pedidoId: string, body?:
     // Serializa reserva local, sem manter transação aberta durante a chamada externa.
     await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${pedidoId}::uuid FOR UPDATE`;
     const current = await tx.pedido.findUniqueOrThrow({ where: { id: pedidoId } });
+    if (current.formaPagamento !== pedido.formaPagamento) {
+      throw new PedidoError("FORMA_PAGAMENTO_ALTERADA", 409, "A forma de pagamento mudou. Consulte o pedido antes de continuar.");
+    }
     if (hasPaid(current.statusPagamento)) return null;
     let selected = clientKey ? await tx.tentativaPagamento.findUnique({ where: { pedidoId_chaveCliente: { pedidoId, chaveCliente: clientKey } } }) : null;
     if (selected && hash && selected.requisicaoHash !== hash) throw new PedidoError("IDEMPOTENCIA_CONFLITO", 409, "Esta tentativa já foi usada com outros dados. Consulte a situação do pagamento.");

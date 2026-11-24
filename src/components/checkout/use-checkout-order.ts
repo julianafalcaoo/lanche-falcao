@@ -33,7 +33,7 @@ export function useCheckoutOrder(intent: string | null) {
     let active = true;
     void checkoutRequest<{ pedido: CheckoutOrder }>(`/api/pedidos/${request.pedidoId}`).then(result => {
       if (!validOrder(result.pedido)) throw new Error("Resposta de pedido inválida.");
-      if (active) setOrder(result.pedido);
+      if (active) setOrder(previous => previous?.id === result.pedido.id ? previous : result.pedido);
     }).catch(() => { if (active) setError("Não foi possível recuperar o pedido. Confirme sua identificação e tente novamente."); });
     return () => { active = false; };
   }, [request?.pedidoId]);
@@ -64,5 +64,5 @@ export function useCheckoutOrder(intent: string | null) {
     finally { lock.current = false; setBusy(false); }
   }
   function finish() { sessionStorage.removeItem(storageKey); setRequest(null); setOrder(null); setError(""); }
-  return { request, order: request?.pedidoId === order?.id ? order : null, ready, busy, error, canEdit, start, finish };
+  return { request, order: request?.pedidoId === order?.id ? order : null, ready, busy, error, canEdit, start, finish, setOrder };
 }

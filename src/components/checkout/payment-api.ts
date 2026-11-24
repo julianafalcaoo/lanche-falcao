@@ -5,8 +5,8 @@ export class CheckoutRequestError extends Error {
   constructor(message: string, status: number) { super(message); this.status = status; }
 }
 
-export async function checkoutRequest<T>(url: string, body?: object, key?: string): Promise<T> {
-  const response = await fetch(url, { method: body ? "POST" : "GET", credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000),
+export async function checkoutRequest<T>(url: string, body?: object, key?: string, method = body ? "POST" : "GET"): Promise<T> {
+  const response = await fetch(url, { method, credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000),
     headers: body ? { "Content-Type": "application/json", ...(key ? { "Idempotency-Key": key } : {}) } : undefined,
     body: body ? JSON.stringify(body) : undefined }).catch(() => { throw new Error("A resposta não chegou. Atualize a situação ou repita a mesma tentativa com segurança."); });
   const result = await response.json().catch(() => null);
