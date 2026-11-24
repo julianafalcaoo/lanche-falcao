@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   try {
-    const cliente = await currentClient(request);
-    return cliente ? otpJson({ autenticado: true, cliente }) : otpJson({ autenticado: false }, 401);
+    const session = await currentClient(request);
+    return session ? otpJson({ autenticado: true, ...session }) : otpJson({ autenticado: false }, 401);
   } catch (error) { return authFailure(error); }
 }

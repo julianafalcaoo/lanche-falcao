@@ -1,7 +1,8 @@
 import { protectMutation } from "../../../server/auth/http.ts";
+import { checkoutScopeForCliente } from "../../../server/auth/session.ts";
 import { requireCliente } from "../../../server/pedidos/session.ts";
 import { criarPedido, listarPedidos } from "../../../server/pedidos/service.ts";
-import { parseKey, parsePage } from "../../../server/pedidos/validation.ts";
+import { PedidoError, parseKey, parsePage } from "../../../server/pedidos/validation.ts";
 import { pedidoBody, pedidoFailure, pedidoJson } from "../../../server/pedidos/http.ts";
 
 export const runtime = "nodejs";
@@ -10,6 +11,10 @@ export async function POST(request: Request) {
   try {
     const clienteId = await requireCliente(request);
     protectMutation(request);
+    const scope = request.headers.get("Checkout-Scope");
+    if (scope !== null && scope !== checkoutScopeForCliente(clienteId)) {
+      throw new PedidoError("IDENTIFICACAO_ALTERADA", 409, "A identificação mudou. Confira sua conta antes de retomar o pedido.");
+    }
     const key = parseKey(request.headers.get("Idempotency-Key"));
     const result = await criarPedido(clienteId, key, await pedidoBody(request));
     return pedidoJson({ pedido: result.pedido }, result.created ? 201 : 200);

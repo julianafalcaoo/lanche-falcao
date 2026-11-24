@@ -24,7 +24,7 @@ async function setup(page: Page, logged = false, seedDraft = draft) {
     requests.push({ path, body });
     if (path === "me") {
       await pauseSession;
-      return route.fulfill({ status: sessionError ? 503 : authenticated ? 200 : 401, json: sessionError ? {} : authenticated ? { autenticado: true, cliente: customer } : { autenticado: false } });
+      return route.fulfill({ status: sessionError ? 503 : authenticated ? 200 : 401, json: sessionError ? {} : authenticated ? { autenticado: true, cliente: customer, checkoutScope: "a".repeat(64) } : { autenticado: false } });
     }
     if (path === "otp/solicitar") {
       await pauseSend;
@@ -155,6 +155,23 @@ test("autenticado valida Entrega e preserva endereço no refresh", async ({ page
   await expect(page.getByRole("radio", { name: "Entrega", exact: true })).toBeChecked();
   await expect(page.getByLabel("Rua *", { exact: true })).toHaveValue("Rua de teste");
   expect(await storage(page)).toEqual(before);
+});
+
+test("consulta de CEP preserva rua informada e completa só os campos vazios", async ({ page }) => {
+  await setup(page, true, {
+    orderType: "delivery",
+    address: { ...draft.address, postalCode: "69000-000", street: "Rua informada pelo cliente", number: "10" },
+  });
+  await page.route("https://viacep.com.br/**", route => route.fulfill({
+    headers: { "access-control-allow-origin": "http://127.0.0.1:3100" },
+    json: { logradouro: "Rua retornada pelo CEP", bairro: "Centro", localidade: "Manaus", uf: "AM" },
+  }));
+  await page.goto("/checkout");
+  await page.getByLabel("CEP *", { exact: true }).focus();
+  await page.getByLabel("Número *", { exact: true }).focus();
+  await expect(page.getByLabel("Cidade *", { exact: true })).toHaveValue("Manaus");
+  await expect(page.getByLabel("Rua *", { exact: true })).toHaveValue("Rua informada pelo cliente");
+  await expect(page.getByLabel("Número *", { exact: true })).toHaveValue("10");
 });
 
 for (const width of [320, 375, 430, 768, 1024, 1440]) {

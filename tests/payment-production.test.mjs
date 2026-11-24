@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, createHash, createHmac } from "node:crypto";
 import { after, beforeEach, test } from "node:test";
 import { paymentMemory } from "./support/payment-memory.mjs";
 
@@ -19,19 +19,23 @@ const { GET: configRoute } = await import("../src/app/api/pagamentos/config/rout
 const { sessionCookieName } = await import("../src/server/auth/session.ts");
 const privateKey = "APP_USR-unit-private-not-a-real-credential";
 const publicKey = "APP_USR-unit-public-not-a-real-credential";
+const pairFingerprint = environment => createHash("sha256").update(JSON.stringify([environment, privateKey, publicKey])).digest("hex");
 const payer = { email: "comprador@dominio.com.br" };
 let memory, pedido, calls, response;
 const orderId = "ORDproduction000000000001";
 function remote(status = "processing", status_detail = "in_process", method = "pix") {
   // Contrato de Orders Pix: live_mode não é garantido. Não inventar esse campo.
+  const amount = (pedido.totalCentavos / 100).toFixed(2);
   return { id: orderId, type: "online", ...(method === "pix" ? {} : { live_mode: true }), currency: "BRL", country_code: "BRA", external_reference: pedido.id,
-    total_amount: "8.00", status, status_detail,
-    transactions: { payments: [{ amount: "8.00", status, status_detail,
+    total_amount: amount, status, status_detail,
+    transactions: { payments: [{ amount, status, status_detail,
       payment_method: { id: method, type: method === "pix" ? "bank_transfer" : "credit_card" } }] } };
 }
 beforeEach(t => {
   for (const [key, value] of Object.entries({ MERCADO_PAGO_AMBIENTE: "production", MERCADO_PAGO_ACCESS_TOKEN: privateKey,
-    MERCADO_PAGO_PUBLIC_KEY: publicKey, MERCADO_PAGO_WEBHOOK_SECRET: "production-unit-secret" })) {
+    MERCADO_PAGO_PUBLIC_KEY: publicKey, MERCADO_PAGO_WEBHOOK_SECRET: "production-unit-secret",
+    VERCEL: "1", VERCEL_ENV: "production", MERCADO_PAGO_PRODUCTION_CHARGES_ENABLED: "true",
+    CRON_SECRET: "unit-cron-secret-1234", MERCADO_PAGO_CREDENTIAL_PAIR_SHA256: pairFingerprint("production") })) {
     const previous = process.env[key]; process.env[key] = value;
     t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
   }
@@ -45,6 +49,31 @@ beforeEach(t => {
   });
 });
 after(() => prisma.$disconnect());
+
+for (const formaPagamento of ["PIX", "CARTAO"]) {
+  test(`${formaPagamento} envia o total persistido com taxa e recusa reconciliação pelo subtotal`, async () => {
+    Object.assign(pedido, { formaPagamento, subtotalCentavos: 800, taxaEntregaCentavos: 300, totalCentavos: 1100 });
+    await prisma.pedido.update({ where: { id: pedido.id }, data: pedido });
+    const method = formaPagamento === "PIX" ? "pix" : "visa";
+    const body = formaPagamento === "PIX" ? { payer } : {
+      payer, card: { token: "mock_token_123456789", payment_method_id: method, payment_type_id: "credit_card", installments: 1 },
+    };
+    response = remote("action_required", formaPagamento === "PIX" ? "waiting_transfer" : "pending_challenge", method);
+    const pending = await processPayment(pedido.clienteId, pedido.id, body, randomUUID());
+    assert.equal(pending.pedido.totalCentavos, 1100);
+    assert.equal(pending.pedido.statusPagamento, "PENDENTE");
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(calls[0].init.body);
+    assert.equal(payload.total_amount, "11.00");
+    assert.equal(payload.transactions.payments[0].amount, "11.00");
+
+    response = remote("processed", "accredited", method);
+    response.total_amount = response.transactions.payments[0].amount = "8.00";
+    const checked = await processPayment(pedido.clienteId, pedido.id);
+    assert.equal(checked.pedido.statusPagamento, "PENDENTE");
+    assert.equal(checked.tentativa.codigoErro, "RESPOSTA_INVALIDA");
+  });
+}
 
 test("ambiente explícito e credenciais inválidas falham sem rede ou vazamento", () => {
   assert.equal(paymentConfig().environment, "production");
@@ -66,6 +95,39 @@ test("ambiente explícito e credenciais inválidas falham sem rede ou vazamento"
   assert.equal(calls.length, 0);
 });
 
+test("Preview, hash ausente ou par incompatível bloqueiam o pagamento antes da rede", async () => {
+  for (const [key, value] of [
+    ["VERCEL_ENV", "preview"],
+    ["MERCADO_PAGO_CREDENTIAL_PAIR_SHA256", ""],
+    ["MERCADO_PAGO_CREDENTIAL_PAIR_SHA256", pairFingerprint("test")],
+    ["MERCADO_PAGO_PUBLIC_KEY", "APP_USR-other-unit-public-credential"],
+  ]) {
+    const original = process.env[key];
+    process.env[key] = value;
+    await assert.rejects(processPayment(pedido.clienteId, pedido.id, { payer }, randomUUID()), { code: "PAGAMENTO_CONFIGURACAO" });
+    process.env[key] = original;
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(memory.rows("tentativaPagamento").length, 0);
+});
+
+test("pausar cobranças ou perder webhook/cron bloqueia novo envio e mantém reconciliação", async () => {
+  await processPayment(pedido.clienteId, pedido.id, { payer }, randomUUID());
+  for (const key of ["MERCADO_PAGO_PRODUCTION_CHARGES_ENABLED", "MERCADO_PAGO_WEBHOOK_SECRET", "CRON_SECRET"]) {
+    const original = process.env[key];
+    delete process.env[key];
+    await assert.rejects(processPayment(pedido.clienteId, pedido.id, { payer }, randomUUID()), { code: "PAGAMENTO_CONFIGURACAO" });
+    process.env[key] = original;
+  }
+  process.env.MERCADO_PAGO_PRODUCTION_CHARGES_ENABLED = "false";
+  response = remote("processed", "accredited");
+  const approved = await processPayment(pedido.clienteId, pedido.id);
+  assert.equal(approved.pedido.statusPagamento, "APROVADO");
+  assert.equal(memory.rows("tentativaPagamento").length, 1);
+  assert.equal(calls.filter(call => call.init.method === "POST").length, 1);
+  assert.equal(calls.length, 2);
+});
+
 test("pagador real é obrigatório; fixtures só funcionam em test", () => {
   assert.deepEqual(parsePayment({ payer }, "PIX"), { payer });
   for (const email of [undefined, "", "sem-email", "a@testuser.com", "a@example.com", "a@b.com\r\nX: y"]) {
@@ -74,6 +136,9 @@ test("pagador real é obrigatório; fixtures só funcionam em test", () => {
   assert.throws(() => parsePayment({ payer: { ...payer, first_name: "APRO" } }, "PIX"), { status: 422 });
   assert.throws(sandboxPixInput, { status: 422 }); assert.throws(sandboxCardEmail, { status: 422 });
   process.env.MERCADO_PAGO_AMBIENTE = "test";
+  assert.throws(paymentConfig, { code: "PAGAMENTO_CONFIGURACAO" });
+  process.env.VERCEL_ENV = "preview";
+  process.env.MERCADO_PAGO_CREDENTIAL_PAIR_SHA256 = pairFingerprint("test");
   assert.equal(sandboxPixInput().payer.first_name, "APRO");
   assert.equal(sandboxCardEmail(), "test@testuser.com");
   assert.throws(() => parsePayment({ payer }, "PIX"), { status: 422 });
@@ -93,17 +158,26 @@ test("Pix aceita ausência de live_mode e rejeita ambiente explícito incompatí
   assert.equal(normalizeOrder({ ...approved, live_mode: undefined }, pedido).localStatus, "APROVADO");
 });
 
-test("cartão mantém exatamente a validação anterior de live_mode em ambos os ambientes", () => {
+test("cartão aceita live_mode ausente com ID de produção documentado e rejeita ambiente contraditório", () => {
   const cardOrder = { ...pedido, formaPagamento: "CARTAO" };
-  const approved = remote("processed", "accredited", "visa");
+  const approved = { ...remote("processed", "accredited", "visa"), id: "ORD01J49MMW3SSBK5PSV3DFR32959" };
   for (const environment of ["test", "production"]) {
     process.env.MERCADO_PAGO_AMBIENTE = environment;
     for (const live_mode of [undefined, null, false, true, "true", "false", 0, 1]) {
-      const previousRuleAccepts = environment === "production" ? live_mode === true : live_mode === undefined || live_mode === false;
+      const accepts = live_mode === undefined || live_mode === (environment === "production");
       const normalize = () => normalizeOrder({ ...approved, live_mode }, cardOrder);
-      if (previousRuleAccepts) assert.equal(normalize().localStatus, "APROVADO");
+      if (accepts) assert.equal(normalize().localStatus, "APROVADO");
       else assert.throws(normalize, { code: "RESPOSTA_INVALIDA" });
     }
+  }
+  const testOrder = { ...approved, id: "ORDTST01J49MMW3SSBK5PSV3DFR32959", live_mode: undefined };
+  process.env.MERCADO_PAGO_AMBIENTE = "test";
+  assert.equal(normalizeOrder(testOrder, cardOrder).localStatus, "APROVADO");
+  process.env.MERCADO_PAGO_AMBIENTE = "production";
+  assert.throws(() => normalizeOrder(testOrder, cardOrder), { code: "RESPOSTA_INVALIDA" });
+  assert.throws(() => normalizeOrder({ ...testOrder, live_mode: true }, cardOrder), { code: "RESPOSTA_INVALIDA" });
+  for (const mismatch of [{ id: "ORDunclassified12345" }, { total_amount: "0.01" }, { external_reference: randomUUID() }, { currency: "USD" }]) {
+    assert.throws(() => normalizeOrder({ ...approved, live_mode: undefined, ...mismatch }, cardOrder), { code: "RESPOSTA_INVALIDA" });
   }
 });
 
@@ -121,6 +195,46 @@ test("Pix sem live_mode continua exigindo identificadores, transação única, v
   }
   const unconfirmed = { ...approved, transactions: { payments: [{ ...approved.transactions.payments[0], status: "action_required", status_detail: "waiting_transfer" }] } };
   assert.equal(normalizeOrder(unconfirmed, pedido).localStatus, "PENDENTE");
+});
+
+test("aprovação com valor efetivamente pago divergente é rejeitada em Pix e cartão", () => {
+  for (const [formaPagamento, method] of [["PIX", "pix"], ["CARTAO", "visa"]]) {
+    const reference = { ...pedido, formaPagamento };
+    const response = remote("processed", "accredited", method);
+    response.total_paid_amount = response.transactions.payments[0].paid_amount = "8.00";
+    assert.equal(normalizeOrder(response, reference).localStatus, "APROVADO");
+    response.total_paid_amount = "7.99";
+    assert.throws(() => normalizeOrder(response, reference), { code: "RESPOSTA_INVALIDA" });
+    response.total_paid_amount = "8.00";
+    response.transactions.payments[0].paid_amount = "0.00";
+    assert.throws(() => normalizeOrder(response, reference), { code: "RESPOSTA_INVALIDA" });
+  }
+});
+
+test("Pix só encerra recusa ou expiração quando a transação confirma o estado final", () => {
+  for (const [status, detail, txnStatus, txnDetail, expected] of [
+    ["failed", "failed", "failed", "failed", "RECUSADO"],
+    ["canceled", "expired", "canceled", "expired", "CANCELADO"],
+    ["expired", "expired", "expired", "expired", "CANCELADO"],
+    ["failed", "failed", "processing", "in_process", "PENDENTE"],
+    ["canceled", "expired", "action_required", "waiting_transfer", "PENDENTE"],
+  ]) {
+    const response = remote(status, detail);
+    Object.assign(response.transactions.payments[0], { status: txnStatus, status_detail: txnDetail });
+    const result = normalizeOrder(response, pedido);
+    assert.equal(result.localStatus, expected);
+    assert.equal(result.encerrada, expected !== "PENDENTE");
+  }
+});
+
+test("Pix mantém copia e cola e aceita apenas base64 com assinatura PNG ou JPEG para a imagem", () => {
+  for (const [image, expected] of [["/9j/4AAQ", "/9j/4AAQ"], ["iVBORw0KGgoAAA==", "iVBORw0KGgoAAA=="], ["/9j/invalid<", null], ["PHN2Zz4=", null]]) {
+    const response = remote("action_required", "waiting_transfer");
+    Object.assign(response.transactions.payments[0].payment_method, { qr_code: "fixture-pix", qr_code_base64: image });
+    const result = normalizeOrder(response, pedido);
+    assert.equal(result.qrCode, "fixture-pix");
+    assert.equal(result.qrCodeBase64, expected);
+  }
 });
 
 test("resposta Pix perdida recupera por busca e GET sem live_mode, sem segunda criação", async t => {
@@ -145,6 +259,8 @@ test("resposta Pix perdida recupera por busca e GET sem live_mode, sem segunda c
 for (const environment of ["test", "production"]) {
   test(`Pix ${environment} sem live_mode: pendente com QR, idempotência e consulta até aprovação`, async () => {
     process.env.MERCADO_PAGO_AMBIENTE = environment;
+    process.env.VERCEL_ENV = environment === "test" ? "preview" : "production";
+    process.env.MERCADO_PAGO_CREDENTIAL_PAIR_SHA256 = pairFingerprint(environment);
     const input = { payer: environment === "test" ? { email: "test@testuser.com" } : payer };
     response = remote("action_required", "waiting_transfer");
     response.transactions.payments[0].payment_method.qr_code = "unit-pix-code-from-mocked-provider";
@@ -164,6 +280,8 @@ for (const environment of ["test", "production"]) {
   });
   test(`worker Pix ${environment} recupera Order assíncrona sem live_mode sem criar cobrança`, async () => {
     process.env.MERCADO_PAGO_AMBIENTE = environment;
+    process.env.VERCEL_ENV = environment === "test" ? "preview" : "production";
+    process.env.MERCADO_PAGO_CREDENTIAL_PAIR_SHA256 = pairFingerprint(environment);
     const input = { payer: environment === "test" ? { email: "test@testuser.com" } : payer };
     response = { ...remote(), transactions: undefined };
     await processPayment(pedido.clienteId, pedido.id, input, randomUUID());

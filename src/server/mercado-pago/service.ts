@@ -2,12 +2,16 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../../lib/prisma.ts";
 import { PedidoError, isUuid } from "../pedidos/validation.ts";
-import { paymentConfig } from "./config.ts";
+import { paymentConfig, paymentCreationConfig } from "./config.ts";
 import { mercadoPago, orderPayload, ProviderError } from "./client.ts";
 import { applyOrderSnapshot, reconcileAttempt } from "./reconciliation.ts";
 import { canPrepare, hasPaid } from "./states.ts";
 import { parsePayment, record } from "./validation.ts";
 import { sandboxPixInput } from "./sandbox.ts";
+
+const PIX_RECOVERY_INTERVAL_MS = 60000;
+const CARD_RECOVERY_INTERVAL_MS = 15000;
+type Challenge = Awaited<ReturnType<typeof applyOrderSnapshot>>;
 
 async function owned(clienteId: string, pedidoId: string) {
   if (!isUuid(pedidoId)) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
@@ -15,41 +19,57 @@ async function owned(clienteId: string, pedidoId: string) {
   if (!pedido) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
   return pedido;
 }
-export async function paymentView(clienteId: string, pedidoId: string) {
+export async function paymentView(clienteId: string, pedidoId: string, challenge?: Challenge) {
   const pedido = await owned(clienteId, pedidoId);
   const attempt = await prisma.tentativaPagamento.findFirst({ where: { pedidoId }, orderBy: [{ criadoEm: "desc" }, { id: "desc" }] });
-  return { pedido: { id: pedido.id, formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento, totalCentavos: pedido.totalCentavos,
+  const desafio3dsUrl = challenge && attempt?.id === challenge.attemptId && !attempt.encerrada
+    && attempt.statusExterno === "action_required" && attempt.detalheExterno === "pending_challenge"
+    && pedido.formaPagamento === "CARTAO" && pedido.statusPagamento === "PENDENTE" ? challenge.url : null;
+  return { ...(desafio3dsUrl ? { desafio3dsUrl } : {}), pedido: { id: pedido.id, formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento, totalCentavos: pedido.totalCentavos,
     liberadoParaPreparo: canPrepare(pedido.formaPagamento, pedido.statusPagamento) },
     tentativa: attempt ? { id: attempt.id, statusExterno: attempt.statusExterno, detalheExterno: attempt.detalheExterno, codigoErro: attempt.codigoErro,
       podeTentarNovamente: attempt.encerrada && !hasPaid(pedido.statusPagamento),
       aguardando: !attempt.encerrada, qrCode: attempt.qrCode, qrCodeBase64: attempt.qrCodeBase64, ticketUrl: attempt.ticketUrl } : null };
 }
 
-export async function processPayment(clienteId: string, pedidoId: string, body?: unknown, clientKey?: string) {
+export async function processPayment(clienteId: string, pedidoId: string, body?: unknown, clientKey?: string, fromCheckout = false) {
   const pedido = await owned(clienteId, pedidoId);
   if (pedido.formaPagamento === "DINHEIRO") return paymentView(clienteId, pedidoId);
   if (!pedido.formaPagamento) throw new PedidoError("PAGAMENTO_INVALIDO", 422, "Este pedido não possui forma de pagamento.");
+  const recoveryInterval = !fromCheckout ? 0 : pedido.formaPagamento === "PIX" ? PIX_RECOVERY_INTERVAL_MS : CARD_RECOVERY_INTERVAL_MS;
   if (body === undefined) {
     const latest = await prisma.tentativaPagamento.findFirst({ where: { pedidoId }, orderBy: [{ criadoEm: "desc" }, { id: "desc" }] });
+    if (recoveryInterval && (pedido.statusPagamento !== "PENDENTE" || !latest || latest.encerrada)) return paymentView(clienteId, pedidoId);
     if (latest?.orderId) {
-      try { await reconcileAttempt(latest.id); } catch (error) { if (!(error instanceof ProviderError)) throw error; }
+      try { return paymentView(clienteId, pedidoId, await reconcileAttempt(latest.id, recoveryInterval)); }
+      catch (error) { if (!(error instanceof ProviderError)) throw error; }
       return paymentView(clienteId, pedidoId);
     }
   }
   if (hasPaid(pedido.statusPagamento)) return paymentView(clienteId, pedidoId);
-  paymentConfig();
+  if (body === undefined) paymentConfig();
+  else paymentCreationConfig();
   const automaticPix = pedido.formaPagamento === "PIX" && record(body) && Object.keys(body).length === 1 && body.iniciarPix === true;
   const input = body === undefined ? null : parsePayment(automaticPix ? sandboxPixInput() : body, pedido.formaPagamento);
   const payload = input ? orderPayload(pedido, input) : null;
   const hash = payload ? createHash("sha256").update(JSON.stringify(payload)).digest("hex") : null;
+  const legacyPayload = input && payload?.config ? orderPayload(pedido, input, false) : null;
+  const legacyHash = legacyPayload ? createHash("sha256").update(JSON.stringify(legacyPayload)).digest("hex") : null;
   const lease = new Date(Date.now() + 60000);
-  const attempt = await prisma.$transaction(async tx => {
+  const reservation = await prisma.$transaction(async tx => {
     // Serializa reserva local, sem manter transação aberta durante a chamada externa.
     await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${pedidoId}::uuid FOR UPDATE`;
     const current = await tx.pedido.findUniqueOrThrow({ where: { id: pedidoId } });
     if (hasPaid(current.statusPagamento)) return null;
+    if (current.formaPagamento !== pedido.formaPagamento) {
+      throw new PedidoError("FORMA_PAGAMENTO_ALTERADA", 409, "A forma de pagamento foi alterada. Retome o pedido para consultar a situação.");
+    }
     let selected = clientKey ? await tx.tentativaPagamento.findUnique({ where: { pedidoId_chaveCliente: { pedidoId, chaveCliente: clientKey } } }) : null;
-    if (selected && hash && selected.requisicaoHash !== hash) throw new PedidoError("IDEMPOTENCIA_CONFLITO", 409, "Esta tentativa já foi usada com outros dados. Consulte a situação do pagamento.");
+    // O provedor exige os mesmos dados quando a chave pertence a uma tentativa pré-3DS.
+    const useLegacy = !!legacyHash && selected?.requisicaoHash === legacyHash;
+    const sendPayload = useLegacy ? legacyPayload : payload;
+    const sendHash = useLegacy ? legacyHash : hash;
+    if (selected && sendHash && selected.requisicaoHash !== sendHash) throw new PedidoError("IDEMPOTENCIA_CONFLITO", 409, "Esta tentativa já foi usada com outros dados. Consulte a situação do pagamento.");
     if (!selected) {
       const active = await tx.tentativaPagamento.findFirst({ where: { pedidoId, encerrada: false } });
       if (active) selected = active;
@@ -61,14 +81,20 @@ export async function processPayment(clienteId: string, pedidoId: string, body?:
     }
     if (!selected || selected.encerrada || (selected.bloqueadaAte && selected.bloqueadaAte > new Date())) return null;
     // Sem ID remoto, só repetir o MESMO payload/chave. Token não é persistido.
-    if (!selected.orderId && payload && (selected.requisicaoHash !== hash || selected.chaveCliente !== clientKey || Date.now() - selected.criadoEm.getTime() > 86400000 || selected.codigoErro === "RECONCILIACAO_NECESSARIA")) return null;
-    return tx.tentativaPagamento.update({ where: { id: selected.id }, data: { bloqueadaAte: lease, envios: { increment: 1 } } });
+    if (!selected.orderId && sendPayload && (selected.requisicaoHash !== sendHash || selected.chaveCliente !== clientKey || Date.now() - selected.criadoEm.getTime() > 86400000 || selected.codigoErro === "RECONCILIACAO_NECESSARIA")) return null;
+    const remoteLookup = recoveryInterval > 0 && (!!selected.orderId || !sendPayload);
+    if (remoteLookup && Date.now() - (selected.reconciliadaEm ?? selected.criadoEm).getTime() < recoveryInterval) return null;
+    const attempt = await tx.tentativaPagamento.update({ where: { id: selected.id }, data: {
+      bloqueadaAte: lease, envios: { increment: 1 }, ...(remoteLookup ? { reconciliadaEm: new Date() } : {}),
+    } });
+    return { attempt, sendPayload };
   });
-  if (!attempt) return paymentView(clienteId, pedidoId);
+  if (!reservation) return paymentView(clienteId, pedidoId);
+  const { attempt, sendPayload } = reservation;
   try {
     let raw: unknown;
     if (attempt.orderId) raw = await mercadoPago.get(attempt.orderId);
-    else if (payload) raw = await mercadoPago.create(payload, attempt.chaveProvedor);
+    else if (sendPayload) raw = await mercadoPago.create(sendPayload, attempt.chaveProvedor);
     else {
       // Recuperação de resposta perdida sem guardar token de cartão no banco/browser.
       const search = await mercadoPago.search(pedidoId, attempt.criadoEm);
@@ -78,11 +104,11 @@ export async function processPayment(clienteId: string, pedidoId: string, body?:
       if (candidates.length !== 1) throw new ProviderError("RECONCILIACAO_NECESSARIA");
       raw = await mercadoPago.get(candidates[0].id);
     }
-    await applyOrderSnapshot(attempt.id, lease, raw);
+    return paymentView(clienteId, pedidoId, await applyOrderSnapshot(attempt.id, lease, raw));
   } catch (error) {
     const failure = error instanceof ProviderError ? error : new ProviderError("RESPOSTA_INCERTA");
     // Erro de consulta nunca autoriza uma nova cobrança; a Order já existe.
-    const definitive = failure.definitive && !attempt.orderId && payload !== null && attempt.envios === 1;
+    const definitive = failure.definitive && !attempt.orderId && sendPayload !== null && attempt.envios === 1;
     await prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${pedidoId}::uuid FOR UPDATE`;
       const changed = await tx.tentativaPagamento.updateMany({ where: { id: attempt.id, bloqueadaAte: lease }, data: { codigoErro: failure.code, encerrada: definitive, ...(definitive ? { statusLocal: "RECUSADO" } : {}), bloqueadaAte: new Date(Date.now() + failure.waitSeconds * 1000) } });

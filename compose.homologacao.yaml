@@ -1,0 +1,31 @@
+name: lanche-falcao-homologacao
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: lanche_falcao_homologacao
+      POSTGRES_USER: lanche_homologacao
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5543:5432"
+    volumes:
+      - postgres_homologacao:/var/lib/postgresql/data
+    networks:
+      - banco
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "lanche_homologacao", "-d", "lanche_falcao_homologacao"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_homologacao:
+
+networks:
+  banco:
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.enable_icc: "false"

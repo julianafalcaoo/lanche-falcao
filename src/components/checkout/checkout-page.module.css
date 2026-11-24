@@ -12,6 +12,7 @@
 .option input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--purple); }
 .address { margin-top: 28px; }
 .payment { margin-top: 24px; }
+.cardChallenge { width: 100%; min-height: 420px; margin-top: 12px; border: 1px solid #e8e1ee; border-radius: 12px; }
 .pixQr { display: block; width: 240px; max-width: 100%; height: auto; margin: 16px auto; }
 .field textarea { width: 100%; min-width: 0; min-height: 100px; padding: 12px; border: 1px solid #d9d0e1; border-radius: 10px; resize: vertical; overflow-wrap: anywhere; }
 .fields { display: grid; gap: 16px; margin-top: 16px; }

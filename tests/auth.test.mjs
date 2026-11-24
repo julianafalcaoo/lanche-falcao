@@ -130,7 +130,9 @@ test("OTP correto cria cliente verificado, sessão persistente com hash e me mí
     const response = await me(getRequest(cookie.split(";")[0]));
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.deepEqual(await response.json(), { autenticado: true, cliente: { nome: "Maria", telefone } });
+    const { checkoutScope, ...data } = await response.json();
+    assert.match(checkoutScope, /^[a-f0-9]{64}$/);
+    assert.deepEqual(data, { autenticado: true, cliente: { nome: "Maria", telefone } });
   }
   assert.equal((await verificar(request({ desafioId: id, codigo: "0123" }))).status, 409);
   assert.equal(await prisma.sessao.count(), 1);
