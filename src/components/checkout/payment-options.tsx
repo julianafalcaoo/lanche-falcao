@@ -6,7 +6,7 @@ export function PaymentOptions({ payment, cardAvailable, onChange, error }: { pa
     <legend>Forma de pagamento</legend>
     <div className={styles.options}>
       {([{ value: "PIX", label: "PIX" }, { value: "DINHEIRO", label: "Dinheiro" }, { value: "CARTAO", label: "Cartão" }] as const).map(({ value, label }) => <label className={styles.option} key={value}>
-        <input type="radio" name="formaPagamento" value={value} checked={payment.formaPagamento === value} disabled={value === "CARTAO" && !cardAvailable} onChange={() => onChange({ formaPagamento: value, precisaTroco: false, trocoValor: "" })} />{value === "CARTAO" && !cardAvailable ? "Cartão temporariamente indisponível" : label}
+        <input type="radio" name="formaPagamento" value={value} checked={payment.formaPagamento === value} disabled={value === "CARTAO" && !cardAvailable} onChange={() => onChange({ formaPagamento: value, precisaTroco: false, trocoValor: "" })} />{value === "CARTAO" && !cardAvailable ? "Cartão " : label}
       </label>)}
     </div>
     {payment.formaPagamento === "PIX" && <p className={styles.hint}>Ao finalizar, use o QR Code ou o código Pix para pagar.</p>}

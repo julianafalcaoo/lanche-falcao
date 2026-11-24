@@ -19,12 +19,11 @@ A interface é responsiva, adaptada para celulares, tablets e computadores, e ut
 - **ESLint 9** — análise estática do código.
 - **npm** — gerenciamento de dependências e execução de scripts.
 ## APIS USADAS
-Preparação de pagamentos reais, testes seguros e limitações: [documentação da etapa 1](docs/preparacao-producao-pagamentos.md).
 
 - SMS -> INFOBIP
 - PROCURAR END POR CEP -> VIACEP
 - PAGAMENTOS -> MERCADO PAGO
-- GPS ->
+- GPS -> ainda não implementado
 ## Executar localmente
 
 Com Node.js e npm instalados, execute na pasta do projeto:
@@ -36,16 +35,5 @@ npm run dev
 
 Acesse `http://localhost:3000` no navegador.
 
-## Estrutura do projeto
 
-```text
-src/
-├── app/                 # Páginas, layout e estilos globais
-├── components/          # Componentes de interface e do cardápio
-├── data/                # Dados locais do cardápio
-└── types/               # Tipos dos produtos e categorias
-public/
-└── images/              # Logo e imagens dos produtos e categorias
-```
-
-Ao final será feito deploy do site.
+O site está disponível em: `https://lanche-falcao.vercel.app/`

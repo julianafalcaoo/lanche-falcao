@@ -91,7 +91,7 @@ export async function alterarPagamento(clienteId: string, id: string, body: unkn
       throw new PedidoError("TROCA_PAGAMENTO_BLOQUEADA", 409, "Já existe um pagamento para este pedido. Consulte a situação antes de continuar.");
     }
     if (payment.formaPagamento === "CARTAO" && process.env.MERCADO_PAGO_AMBIENTE?.trim() !== "test") {
-      throw new PedidoError("CARTAO_INDISPONIVEL", 503, "Cartão temporariamente indisponível.");
+      throw new PedidoError("CARTAO_INDISPONIVEL", 503, "Cartão.");
     }
     if (payment.trocoParaCentavos !== null && payment.trocoParaCentavos < pedido.totalCentavos) {
       throw new PedidoError("TROCO_INSUFICIENTE", 422, "O valor para troco deve ser maior ou igual ao total do pedido.");
