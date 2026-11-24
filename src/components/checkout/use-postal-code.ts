@@ -19,7 +19,6 @@ export function usePostalCode(address: DeliveryAddress, onChange: (field: keyof 
       value = digits.length > 5 ? `${digits.slice(0, 5)}-${digits.slice(5)}` : digits;
       if (digits !== address.postalCode.replace(/\D/g, "")) {
         request.current?.abort();
-        edited.current.clear();
         lastCode.current = "";
         setStatus("");
         setRetry(false);
@@ -37,6 +36,7 @@ export function usePostalCode(address: DeliveryAddress, onChange: (field: keyof 
     const controller = new AbortController();
     request.current = controller;
     lastCode.current = code;
+    edited.current.clear();
     setRetry(false);
     setStatus("Buscando endereço...");
     let timedOut = false;
@@ -55,7 +55,7 @@ export function usePostalCode(address: DeliveryAddress, onChange: (field: keyof 
       if (!Object.values(mappings).every((key) => typeof Reflect.get(data, key) === "string")) throw new Error("Invalid postal response");
       for (const key of Object.keys(mappings) as LookupField[]) {
         const value = (Reflect.get(data, mappings[key]) as string).slice(0, key === "state" ? 2 : 200);
-        if (!address[key].trim() && !edited.current.has(key)) {
+        if (!edited.current.has(key)) {
           onChange(key, value);
         }
       }

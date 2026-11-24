@@ -1,16 +1,16 @@
 ﻿import type { PaymentDraft } from "@/lib/payment";
 import styles from "./checkout-page.module.css";
 
-export function PaymentOptions({ payment, onChange, error }: { payment: PaymentDraft; onChange: (value: PaymentDraft) => void; error: string }) {
+export function PaymentOptions({ payment, cardAvailable, onChange, error }: { payment: PaymentDraft; cardAvailable: boolean; onChange: (value: PaymentDraft) => void; error: string }) {
   return <fieldset className={`${styles.orderType} ${styles.payment}`} aria-describedby={error ? "payment-error" : undefined}>
     <legend>Forma de pagamento</legend>
     <div className={styles.options}>
       {([{ value: "PIX", label: "PIX" }, { value: "DINHEIRO", label: "Dinheiro" }, { value: "CARTAO", label: "Cartão" }] as const).map(({ value, label }) => <label className={styles.option} key={value}>
-        <input type="radio" name="formaPagamento" value={value} checked={payment.formaPagamento === value} onChange={() => onChange({ formaPagamento: value, precisaTroco: false, trocoValor: "" })} />{label}
+        <input type="radio" name="formaPagamento" value={value} checked={payment.formaPagamento === value} disabled={value === "CARTAO" && !cardAvailable} onChange={() => onChange({ formaPagamento: value, precisaTroco: false, trocoValor: "" })} />{value === "CARTAO" && !cardAvailable ? "Cartão temporariamente indisponível" : label}
       </label>)}
     </div>
     {payment.formaPagamento === "PIX" && <p className={styles.hint}>Ao finalizar, use o QR Code ou o código Pix para pagar.</p>}
-    {payment.formaPagamento === "CARTAO" && <p className={styles.hint}>Ao finalizar, informe seu cartão no formulário de pagamento.</p>}
+    {cardAvailable && payment.formaPagamento === "CARTAO" && <p className={styles.hint}>Ao finalizar, informe seu cartão no formulário de pagamento.</p>}
     {payment.formaPagamento === "DINHEIRO" && <>
       <p className={styles.hint}>Pagamento no recebimento/retirada.</p>
       <fieldset className={`${styles.orderType} ${styles.payment}`}>

@@ -3,12 +3,11 @@ import { createHash } from "node:crypto";
 import { products } from "../../data/menu.ts";
 import { prisma } from "../../lib/prisma.ts";
 import type { Prisma } from "../../generated/prisma/client.ts";
-import { PedidoError, isUuid, parsePaymentSelection, parsePedido } from "./validation.ts";
+import { PedidoError, isUuid, parsePedido } from "./validation.ts";
 import { canPrepare } from "../mercado-pago/states.ts";
-import { DELIVERY_FEE_CENTS } from "./delivery.ts";
 
 const select = {
-  id: true, tipo: true, status: true, subtotalCentavos: true, taxaEntregaCentavos: true, totalCentavos: true,
+  id: true, tipo: true, status: true, subtotalCentavos: true, totalCentavos: true,
   formaPagamento: true, statusPagamento: true, precisaTroco: true, trocoParaCentavos: true,
   criadoEm: true, atualizadoEm: true,
   entregaCep: true, entregaRua: true, entregaNumero: true, entregaBairro: true,
@@ -24,7 +23,7 @@ function publicPedido(pedido: StoredPedido) {
     formaPagamento: pedido.formaPagamento, statusPagamento: pedido.statusPagamento,
     liberadoParaPreparo: canPrepare(pedido.formaPagamento, pedido.statusPagamento),
     precisaTroco: pedido.precisaTroco, trocoParaCentavos: pedido.trocoParaCentavos,
-    subtotalCentavos: pedido.subtotalCentavos, taxaEntregaCentavos: pedido.taxaEntregaCentavos, totalCentavos: pedido.totalCentavos,
+    subtotalCentavos: pedido.subtotalCentavos, totalCentavos: pedido.totalCentavos,
     criadoEm: pedido.criadoEm, atualizadoEm: pedido.atualizadoEm, itens: pedido.itens,
     ...(pedido.tipo === "ENTREGA" ? { endereco: {
       postalCode: pedido.entregaCep, street: pedido.entregaRua, number: pedido.entregaNumero,
@@ -52,15 +51,13 @@ export async function criarPedido(clienteId: string, key: string, body: unknown)
     return { produtoId: product.id, nomeProduto: product.name, precoUnitarioCentavos: product.priceInCents, quantidade: item.quantity, subtotalCentavos: subtotal };
   });
   const subtotalCentavos = itens.reduce((sum, item) => sum + item.subtotalCentavos, 0);
-  const taxaEntregaCentavos = input.tipo === "ENTREGA" ? DELIVERY_FEE_CENTS : 0;
-  const totalCentavos = subtotalCentavos + taxaEntregaCentavos;
-  if (!Number.isSafeInteger(totalCentavos) || totalCentavos > 2147483647) throw new PedidoError("VALOR_INVALIDO", 422, "O valor do pedido excede o limite permitido.");
+  if (!Number.isSafeInteger(subtotalCentavos) || subtotalCentavos > 2147483647) throw new PedidoError("VALOR_INVALIDO", 422, "O valor do pedido excede o limite permitido.");
   const endereco = input.endereco;
-  validateCash(input.trocoParaCentavos, totalCentavos);
+  if (input.precisaTroco && input.trocoParaCentavos! < subtotalCentavos) throw new PedidoError("TROCO_INSUFICIENTE", 422, "O valor para troco deve ser maior ou igual ao total do pedido.");
   try {
     const pedido = await prisma.$transaction(async (tx) => tx.pedido.create({
       data: {
-        clienteId, tipo: input.tipo, status: "PEDIDO_RECEBIDO", subtotalCentavos, taxaEntregaCentavos, totalCentavos,
+        clienteId, tipo: input.tipo, status: "PEDIDO_RECEBIDO", subtotalCentavos, totalCentavos: subtotalCentavos,
         formaPagamento: input.formaPagamento, statusPagamento: "PENDENTE",
         precisaTroco: input.precisaTroco, trocoParaCentavos: input.trocoParaCentavos,
         chaveIdempotencia: key, requisicaoHash: hash,
@@ -80,28 +77,6 @@ export async function criarPedido(clienteId: string, key: string, body: unknown)
     }
     throw error;
   }
-}
-
-function validateCash(changeFor: number | null, total: number) {
-  if (changeFor !== null && changeFor < total) throw new PedidoError("TROCO_INSUFICIENTE", 422, "O valor para troco deve ser maior ou igual ao total do pedido.");
-}
-
-export async function alterarPagamento(clienteId: string, id: string, body: unknown) {
-  if (!isUuid(id)) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
-  return prisma.$transaction(async tx => {
-    // Compartilha o bloqueio usado na reserva de tentativas e na aplicação de snapshots.
-    await tx.$queryRaw`SELECT id FROM "Pedido" WHERE id = ${id}::uuid AND "clienteId" = ${clienteId}::uuid FOR UPDATE`;
-    const pedido = await tx.pedido.findFirst({ where: { id, clienteId }, select });
-    if (!pedido) throw new PedidoError("PEDIDO_NAO_ENCONTRADO", 404, "Pedido não encontrado.");
-    const payment = parsePaymentSelection(body);
-    const attempt = await tx.tentativaPagamento.findFirst({ where: { pedidoId: id }, select: { id: true } });
-    if (pedido.status !== "PEDIDO_RECEBIDO" || pedido.statusPagamento !== "PENDENTE" || attempt) {
-      throw new PedidoError("TROCA_PAGAMENTO_BLOQUEADA", 409, "A forma de pagamento está bloqueada. Retome o pedido para consultar a situação.");
-    }
-    validateCash(payment.trocoParaCentavos, pedido.totalCentavos);
-    if (pedido.formaPagamento === payment.formaPagamento && pedido.trocoParaCentavos === payment.trocoParaCentavos && pedido.precisaTroco === payment.precisaTroco) return publicPedido(pedido);
-    return publicPedido(await tx.pedido.update({ where: { id }, data: payment, select }));
-  });
 }
 
 export async function consultarPedido(clienteId: string, id: string) {

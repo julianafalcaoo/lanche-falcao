@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 process.env.DATABASE_URL="postgresql://localhost:1/deploy_unit";
 const { databaseOptions }=await import("../src/server/database/config.ts");
 const { assertOtpAccess }=await import("../src/server/auth/otp-access.ts");
@@ -9,66 +8,13 @@ const { solicitarDesafio }=await import("../src/server/auth/service.ts");
 const { prisma }=await import("../src/lib/prisma.ts");
 const { GET, POST }=await import("../src/app/api/interno/pagamentos/reconciliar/route.ts");
 const { sessionCookie, sessionCookieName }=await import("../src/server/auth/session.ts");
-const { POST: requestOtp }=await import("../src/app/api/auth/otp/solicitar/route.ts");
-const { NextRequest }=await import("next/server.js");
 function env(t,key,value){const before=process.env[key];if(value===undefined) delete process.env[key];else process.env[key]=value;t.after(()=>{if(before===undefined)delete process.env[key];else process.env[key]=before;});}
 beforeEach(t=>{
-  for(const key of ["VERCEL","DATABASE_POOL_MAX","INFOBIP_ALLOWED_PHONES","CRON_SECRET","MERCADO_PAGO_RECONCILIACAO_SECRET","HOMOLOGACAO_CHECKOUT_ORIGIN"])env(t,key,undefined);
+  for(const key of ["VERCEL","DATABASE_POOL_MAX","INFOBIP_ALLOWED_PHONES","CRON_SECRET","MERCADO_PAGO_RECONCILIACAO_SECRET"])env(t,key,undefined);
   env(t,"NODE_ENV","test");
   t.mock.method(globalThis,"fetch",async()=>{throw new Error("Rede externa proibida");});
 });
 after(()=>prisma.$disconnect());
-
-const checkoutOrigin = "http://127.0.0.1:3106";
-function localOtpRequest(overrides = {}) {
-  return new NextRequest(`${checkoutOrigin}/api/auth/otp/solicitar`, {
-    method: "POST",
-    headers: {
-      origin: checkoutOrigin, host: "127.0.0.1:3106", "sec-fetch-site": "same-origin",
-      "content-type": "application/json", "x-forwarded-host": "127.0.0.1:3106",
-      "x-forwarded-proto": "http", "x-forwarded-port": "3106", ...overrides,
-    },
-    // Para na leitura do JSON, antes de reservar cota ou consultar o Infobip.
-    body: "{",
-  });
-}
-
-test("OTP local aceita o Origin do navegador apesar da normalização pelo NextRequest", async t => {
-  const request = localOtpRequest();
-  assert.equal(new URL(request.url).origin, "http://localhost:3106");
-  env(t, "HOMOLOGACAO_CHECKOUT_ORIGIN", checkoutOrigin);
-  const response = await requestOtp(request);
-  assert.equal(response.status, 400);
-  assert.equal((await response.json()).erro, "JSON_INVALIDO");
-});
-
-for (const [scenario, overrides] of [
-  ["origem externa", { origin: "https://externo.invalid" }],
-  ["porta diferente", { origin: "http://127.0.0.1:3107" }],
-  ["alias normalizado pelo Next", { origin: "http://localhost:3106" }],
-  ["Host manipulado", { host: "externo.invalid" }],
-  ["forwarded host inconsistente", { "x-forwarded-host": "localhost:3106" }],
-  ["forwarded proto inconsistente", { "x-forwarded-proto": "https" }],
-  ["forwarded port inconsistente", { "x-forwarded-port": "443" }],
-  ["requisição cross-site", { "sec-fetch-site": "cross-site" }],
-]) test(`OTP local rejeita ${scenario}`, async t => {
-  env(t, "HOMOLOGACAO_CHECKOUT_ORIGIN", checkoutOrigin);
-  const response = await requestOtp(localOtpRequest(overrides));
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).erro, "ORIGEM_INVALIDA");
-});
-
-test("OTP na Vercel usa a origem HTTPS da requisição mesmo com configuração local presente", async t => {
-  env(t, "VERCEL", "1");
-  env(t, "HOMOLOGACAO_CHECKOUT_ORIGIN", checkoutOrigin);
-  const productionOrigin = "https://checkout.invalid";
-  for (const [origin, status] of [[productionOrigin, 400], [checkoutOrigin, 403]]) {
-    const request = new NextRequest(`${productionOrigin}/api/auth/otp/solicitar`, {
-      method: "POST", headers: { origin, "content-type": "application/json" }, body: "{",
-    });
-    assert.equal((await requestOtp(request)).status, status);
-  }
-});
 test("Node 24 padronizado e build não executa migrations",()=>{
   const pkg=JSON.parse(readFileSync("package.json","utf8"));
   assert.equal(pkg.engines.node,"24.x");assert.equal(readFileSync(".nvmrc","utf8").trim(),"24");
@@ -129,7 +75,6 @@ test("cron GET falha fechado, não aceita o segredo do POST",async t=>{
 test("cron GET e POST autenticados executam lote sem cache",async t=>{
   env(t,"CRON_SECRET","unit-cron");env(t,"MERCADO_PAGO_RECONCILIACAO_SECRET","unit-post");
   env(t,"MERCADO_PAGO_ACCESS_TOKEN","fake-private");env(t,"MERCADO_PAGO_PUBLIC_KEY","fake-public");env(t,"MERCADO_PAGO_AMBIENTE","test");
-  env(t,"MERCADO_PAGO_CREDENTIAL_PAIR_SHA256",createHash("sha256").update(JSON.stringify(["test","fake-private","fake-public"])).digest("hex"));
   for(const model of ["tentativaPagamento","webhookOrder"]){const original=prisma[model].findMany;prisma[model].findMany=t.mock.fn(async()=>[]);t.after(()=>{prisma[model].findMany=original;});}
   for(const [handler,secret] of [[GET,"unit-cron"],[POST,"unit-post"]]){
     const response=await handler(new Request("https://app.invalid/api/cron",{headers:{authorization:`Bearer ${secret}`}}));

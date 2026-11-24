@@ -112,7 +112,7 @@ export const products: readonly Product[] = [
     "id": "ovo-coberto",
     "name": "Ovo coberto",
     "description": "Preparado com massa de macaxeira.",
-    "priceInCents": 400,
+    "priceInCents": 10,
     "categoryId": "salgados-fritos",
     "dough": "macaxeira",
     "image": {

@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import type { MenuHomeProps } from "@/types/menu";
 import { useCart } from "@/components/cart/cart-provider";
-import { MAX_CART_QUANTITY } from "@/lib/cart";
 import { Header } from "@/components/layout/header";
 import { BottomNavigation } from "@/components/layout/bottom-navigation";
 import { WhatsAppButton } from "@/components/layout/whatsapp-button";
@@ -15,7 +14,7 @@ import { ProductModal } from "./product-modal";
 import { EmptyProductsState } from "./empty-products-state";
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
 export function MenuHome({ products, categories, promotion, whatsappNumber }: MenuHomeProps) {
-  const { addItem, items, ready, totalQuantity } = useCart();
+  const { addItem, ready, totalQuantity } = useCart();
   const [cartNotice, setCartNotice] = useState("");
   useEffect(() => {
     if (!cartNotice) return;
@@ -46,10 +45,6 @@ export function MenuHome({ products, categories, promotion, whatsappNumber }: Me
         {!isSearching && <CategoryFilter categories={categories} selected={selectedCategory} onSelect={setCategoryId} />}
         <p className="sr-only" role="status" aria-live="polite">{visibleProducts.length} {visibleProducts.length === 1 ? "produto encontrado" : "produtos encontrados"}.</p>
         {visibleProducts.length ? <ProductGrid products={visibleProducts} categories={categories} onOpen={setOpenedProductId} onAdd={ready ? (product) => {
-          if ((items.find(item => item.productId === product.id)?.quantity ?? 0) >= MAX_CART_QUANTITY) {
-            setCartNotice(`Limite de ${MAX_CART_QUANTITY} unidades deste produto no carrinho.`);
-            return;
-          }
           addItem(product.id, 1);
           setCartNotice(`${product.name} adicionado ao carrinho. Total: ${totalQuantity + 1} ${(totalQuantity + 1) === 1 ? "unidade" : "unidades"}.`);
         } : undefined} /> : <EmptyProductsState hasProducts={products.length > 0} filtered={isSearching || selectedCategory !== null} onClear={clearFilters} />}

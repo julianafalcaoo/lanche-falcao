@@ -24,7 +24,7 @@ async function setup(page: Page, logged = false, seedDraft = draft) {
     requests.push({ path, body });
     if (path === "me") {
       await pauseSession;
-      return route.fulfill({ status: sessionError ? 503 : authenticated ? 200 : 401, json: sessionError ? {} : authenticated ? { autenticado: true, cliente: customer, checkoutScope: "a".repeat(64) } : { autenticado: false } });
+      return route.fulfill({ status: sessionError ? 503 : authenticated ? 200 : 401, json: sessionError ? {} : authenticated ? { autenticado: true, cliente: customer } : { autenticado: false } });
     }
     if (path === "otp/solicitar") {
       await pauseSend;
@@ -48,6 +48,29 @@ async function identify(page: Page) {
   await expect(page.getByLabel("Código de 4 dígitos")).toBeVisible();
 }
 const storage = (page: Page) => page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
+
+test("Ovo coberto custa dez centavos e soma corretamente no carrinho e checkout", async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("lanche-falcao:cart")) {
+      localStorage.setItem("lanche-falcao:cart", JSON.stringify([{ productId: "ovo-coberto", quantity: 1 }]));
+    }
+  });
+  await page.route("**/*", route => {
+    const url = new URL(route.request().url());
+    if (url.origin !== "http://127.0.0.1:3100") return route.abort();
+    if (url.pathname === "/api/auth/me") return route.fulfill({ status: 401, json: { autenticado: false } });
+    if (url.pathname.startsWith("/api/")) return route.abort();
+    return route.continue();
+  });
+  await page.goto("/produto/ovo-coberto");
+  await expect(page.getByRole("main").getByText(/^R\$\s*0,10$/).first()).toBeVisible();
+  await page.goto("/carrinho");
+  await expect(page.getByRole("status").filter({ hasText: /Total R\$\s*0,10/ })).toHaveCount(1);
+  await page.getByRole("button", { name: "Aumentar quantidade de Ovo coberto" }).click();
+  await expect(page.getByRole("status").filter({ hasText: /Total R\$\s*0,20/ })).toHaveCount(1);
+  await page.getByRole("link", { name: "Continuar pedido" }).click();
+  await expect(page.getByRole("complementary", { name: "Resumo do pedido" }).getByText(/^R\$\s*0,20$/).first()).toBeVisible();
+});
 
 test("consulta sessão sem flicker e recupera falha inesperada", async ({ page }) => {
   const api = await setup(page);
@@ -155,23 +178,6 @@ test("autenticado valida Entrega e preserva endereço no refresh", async ({ page
   await expect(page.getByRole("radio", { name: "Entrega", exact: true })).toBeChecked();
   await expect(page.getByLabel("Rua *", { exact: true })).toHaveValue("Rua de teste");
   expect(await storage(page)).toEqual(before);
-});
-
-test("consulta de CEP preserva rua informada e completa só os campos vazios", async ({ page }) => {
-  await setup(page, true, {
-    orderType: "delivery",
-    address: { ...draft.address, postalCode: "69000-000", street: "Rua informada pelo cliente", number: "10" },
-  });
-  await page.route("https://viacep.com.br/**", route => route.fulfill({
-    headers: { "access-control-allow-origin": "http://127.0.0.1:3100" },
-    json: { logradouro: "Rua retornada pelo CEP", bairro: "Centro", localidade: "Manaus", uf: "AM" },
-  }));
-  await page.goto("/checkout");
-  await page.getByLabel("CEP *", { exact: true }).focus();
-  await page.getByLabel("Número *", { exact: true }).focus();
-  await expect(page.getByLabel("Cidade *", { exact: true })).toHaveValue("Manaus");
-  await expect(page.getByLabel("Rua *", { exact: true })).toHaveValue("Rua informada pelo cliente");
-  await expect(page.getByLabel("Número *", { exact: true })).toHaveValue("10");
 });
 
 for (const width of [320, 375, 430, 768, 1024, 1440]) {

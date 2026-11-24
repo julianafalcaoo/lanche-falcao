@@ -62,15 +62,6 @@ export function paymentMemory(t, prisma) {
       findUnique: async args => find(args)[0] ?? null,
       findUniqueOrThrow: async args => { const row = find(args)[0]; assert.ok(row, `${model} inexistente`); return row; },
       create: async args => create(args),
-      createMany: async ({ data, skipDuplicates }) => {
-        let count = 0;
-        for (const row of [data].flat()) {
-          if (skipDuplicates && tables[model].some(existing => existing.id === row.id)) continue;
-          create({ data: row });
-          count++;
-        }
-        return { count };
-      },
       update: async ({ where, data }) => { const row = tables[model].find(row => matches(row, where)); assert.ok(row); return change(row, data); },
       updateMany: async ({ where, data }) => { const rows = tables[model].filter(row => matches(row, where)); rows.forEach(row => change(row, data)); return { count: rows.length }; },
       upsert: async ({ where, create: data, update }) => { const row = tables[model].find(row => matches(row, where)); return row ? change(row, update) : create({ data }); },

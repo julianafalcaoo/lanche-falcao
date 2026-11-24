@@ -5,25 +5,7 @@ import { OtpError } from "../infobip/otp.ts";
 import { OtpRateLimitError } from "./otp-rate-limit.ts";
 
 export function protectMutation(request: Request) {
-  const { headers } = request;
-  const url = new URL(request.url);
-  const localOrigin = process.env.VERCEL === "1"
-    ? null
-    : URL.parse(process.env.HOMOLOGACAO_CHECKOUT_ORIGIN ?? "");
-  let expectedOrigin = url.origin;
-  if (localOrigin?.protocol === "http:" && localOrigin.hostname === "127.0.0.1" && localOrigin.port) {
-    // NextURL canonicaliza o endereço de loopback para localhost.
-    if (url.protocol !== localOrigin.protocol || url.port !== localOrigin.port ||
-        !["localhost", localOrigin.hostname].includes(url.hostname) ||
-        headers.get("host") !== localOrigin.host ||
-        ![null, localOrigin.host].includes(headers.get("x-forwarded-host")) ||
-        ![null, "http"].includes(headers.get("x-forwarded-proto")) ||
-        ![null, localOrigin.port].includes(headers.get("x-forwarded-port"))) {
-      throw new AuthError("ORIGEM_INVALIDA", 403, "Origem da solicitação não permitida.");
-    }
-    expectedOrigin = localOrigin.origin;
-  }
-  if (headers.get("origin") !== expectedOrigin ||
+  if (request.headers.get("origin") !== new URL(request.url).origin ||
       ![null, "same-origin", "none"].includes(request.headers.get("sec-fetch-site"))) {
     throw new AuthError("ORIGEM_INVALIDA", 403, "Origem da solicitação não permitida.");
   }

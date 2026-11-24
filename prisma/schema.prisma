@@ -98,7 +98,6 @@ model Pedido {
   tipo               TipoPedido
   status             StatusPedido @default(PEDIDO_RECEBIDO)
   subtotalCentavos   Int
-  taxaEntregaCentavos Int @default(0)
   totalCentavos      Int
   formaPagamento     FormaPagamento?
   statusPagamento    StatusPagamento @default(PENDENTE)

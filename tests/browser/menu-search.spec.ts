@@ -1,37 +1,5 @@
 ﻿import { test, expect } from "@playwright/test";
 
-test("limite do pedido vale no catálogo, nos detalhes e no carrinho móvel", async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.addInitScript(() => {
-    if (!localStorage.getItem("lanche-falcao:cart")) {
-      localStorage.setItem("lanche-falcao:cart", JSON.stringify([{ productId: "coxinha-frango", quantity: 99 }]));
-    }
-  });
-  await page.route("**/*", route => new URL(route.request().url()).origin === "http://127.0.0.1:3100" ? route.continue() : route.abort());
-  await page.goto("/");
-  await expect(page.getByRole("button", { name: "Perfil" })).toHaveCount(0);
-  await page.getByRole("searchbox").fill("coxinha");
-  await page.getByRole("button", { name: "Coxinha de frango", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("button", { name: "Aumentar quantidade" })).toBeDisabled();
-  const add = dialog.getByRole("button", { name: "Adicionar ao carrinho", exact: true });
-  await add.click();
-  await expect(add).toBeDisabled();
-  await expect(dialog.getByText(/Limite de 100 unidades/)).toBeVisible();
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Adicionar Coxinha de frango", exact: true }).click();
-  await expect(page.getByText(/Limite de 100 unidades/)).toBeVisible();
-  await page.goto("/carrinho");
-  const quantity = page.getByRole("group", { name: "Quantidade de Coxinha de frango" });
-  await expect(quantity.locator("output")).toHaveText("100");
-  await expect(quantity.getByRole("button", { name: /Aumentar/ })).toBeDisabled();
-  await quantity.getByRole("button", { name: /Diminuir/ }).click();
-  await expect(quantity.locator("output")).toHaveText("99");
-  await page.getByRole("button", { name: "Remover Coxinha de frango" }).click();
-  await expect(page.getByText("Seu carrinho está vazio.")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Continuar pedido" })).toHaveCount(0);
-});
-
 for (const width of [320, 375, 430, 768, 1024, 1440]) {
   test(`pesquisa global, restauração e compra em ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });

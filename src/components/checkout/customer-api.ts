@@ -1,11 +1,8 @@
-export interface CurrentCustomer { nome: string; telefone: string; checkoutScope: string }
+export interface CurrentCustomer { nome: string; telefone: string }
 
 const messages: Record<string, string> = {
   NOME_INVALIDO: "Informe um nome de até 100 caracteres.",
   TELEFONE_INVALIDO: "Confira o celular e o DDD informado.",
-  TELEFONE_NAO_PERMITIDO: "Este telefone não está autorizado neste ambiente. Confira o número informado.",
-  ORIGEM_INVALIDA: "Abra o checkout diretamente no site e tente novamente.",
-  ENVIO_REJEITADO: "O serviço de SMS não aceitou o envio. Confira o número antes de tentar novamente.",
   CODIGO_INVALIDO: "Digite os quatro números do código recebido.",
   CODIGO_INCORRETO: "Código incorreto. Confira o SMS e tente novamente.",
   CODIGO_EXPIRADO: "O código expirou. Solicite um novo código.",
@@ -43,11 +40,10 @@ export async function customerRequest(path: string, body?: object, signal?: Abor
 export async function loadCustomer(signal?: AbortSignal): Promise<CurrentCustomer | null> {
   const data = await customerRequest("me", undefined, signal);
   if (data === null) return null;
-  if (data?.autenticado !== true || typeof data.cliente?.nome !== "string" || typeof data.cliente?.telefone !== "string"
-    || typeof data.checkoutScope !== "string" || !/^[a-f0-9]{64}$/.test(data.checkoutScope)) {
+  if (data?.autenticado !== true || typeof data.cliente?.nome !== "string" || typeof data.cliente?.telefone !== "string") {
     throw new CustomerApiError("INDISPONIVEL");
   }
-  return { nome: data.cliente.nome, telefone: data.cliente.telefone, checkoutScope: data.checkoutScope };
+  return { nome: data.cliente.nome, telefone: data.cliente.telefone };
 }
 
 export function formatCellphone(value: string) {

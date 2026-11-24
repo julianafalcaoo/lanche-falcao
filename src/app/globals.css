@@ -30,6 +30,7 @@ svg { flex-shrink: 0; }
 .search-bar input::-webkit-search-cancel-button { display: none; }
 .search-bar button { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; }
 .header-actions { display: flex; align-items: center; gap: 20px; }
+.header-actions button { display: none; align-items: center; gap: 8px; font-size: 13px; color: #70647e; }
 .header-actions small { display: block; font-size: 10px; font-weight: 400; }
 .menu-link { font-size: 12px; font-weight: 600; color: var(--purple); padding-block: 12px; }
 .main-content { padding-top: 20px; }
@@ -70,7 +71,7 @@ svg { flex-shrink: 0; }
 .site-footer > span { color: #493559; font-size: 14px; }
 .site-footer p { width: 100%; order: 2; }
 .site-footer a { margin-left: auto; min-height: 44px; display: flex; align-items: center; }
-.bottom-navigation { position: fixed; bottom: 0; left: 0; right: 0; z-index: 20; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #eee7f5; background: #fffffffa; box-shadow: 0 -4px 24px #32105006; }
+.bottom-navigation { position: fixed; bottom: 0; left: 0; right: 0; z-index: 20; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #eee7f5; background: #fffffffa; box-shadow: 0 -4px 24px #32105006; }
 .bottom-navigation > * { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 56px; color: #716779; font-size: 10px; }
 .bottom-navigation [aria-current] { color: var(--purple); font-weight: 700; background: #f7f1ff; border-radius: 12px; }
 .bottom-navigation small { font-size: 8px; }
@@ -107,6 +108,8 @@ svg { flex-shrink: 0; }
   .container { width: min(100% - 64px, 1200px); }
   .header-inner { grid-template-columns: auto minmax(180px, 1fr) auto; gap: 24px; padding-block: 18px; }
   .search-bar { grid-column: auto; grid-row: auto; }
+  .header-actions button { display: flex; min-height: 44px; min-width: 44px; justify-content: center; }
+  .header-actions button > span { display: none; }
   .menu-link { display: none; }
   .main-content { padding-top: 32px; }
   .welcome-banner { grid-template-columns: 1.2fr 1fr; min-height: 320px; padding: 36px; align-items: center; }
@@ -132,6 +135,7 @@ svg { flex-shrink: 0; }
 @media (min-width: 1024px) {
   .header-inner { gap: 36px; }
   .brand img { width: 76px; }
+  .header-actions button > span { display: block; }
   .menu-link { display: block; }
   .cart-button { padding: 10px 16px; border-radius: 12px; background: #f3edf9; }
   .welcome-banner { padding: 42px 52px; grid-template-columns: 1.3fr 1fr; }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { after, beforeEach, test } from "node:test";
 import { paymentMemory } from "./support/payment-memory.mjs";
 
@@ -36,8 +36,7 @@ const storedAttempt = () => memory.rows("tentativaPagamento").find(row => row.id
 const runDailyCron = () => dailyCron(new Request("http://localhost/api/interno/pagamentos/reconciliar", { headers: { authorization: "Bearer unit-daily-cron" } }));
 
 beforeEach(t => {
-  const fingerprint = createHash("sha256").update(JSON.stringify(["test", "unit-access", "unit-public"])).digest("hex");
-  for (const [key, value] of Object.entries({ CRON_SECRET: "unit-daily-cron", MERCADO_PAGO_AMBIENTE: "test", MERCADO_PAGO_ACCESS_TOKEN: "unit-access", MERCADO_PAGO_PUBLIC_KEY: "unit-public", MERCADO_PAGO_WEBHOOK_SECRET: secret, MERCADO_PAGO_RECONCILIACAO_SECRET: "unit-worker", MERCADO_PAGO_CREDENTIAL_PAIR_SHA256: fingerprint })) {
+  for (const [key, value] of Object.entries({ CRON_SECRET: "unit-daily-cron", MERCADO_PAGO_AMBIENTE: "test", MERCADO_PAGO_ACCESS_TOKEN: "unit-access", MERCADO_PAGO_PUBLIC_KEY: "unit-public", MERCADO_PAGO_WEBHOOK_SECRET: secret, MERCADO_PAGO_RECONCILIACAO_SECRET: "unit-worker" })) {
     const previous = process.env[key]; process.env[key] = value;
     t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
   }
@@ -106,15 +105,9 @@ test("ACK ocorre após persistir; processamento posterior consulta API antes de 
   assert.equal(storedAttempt().qrCode, null); assert.equal(calls.length, 1);
 });
 test("falha de persistência não confirma recepção", async t => {
-  prisma.webhookOrder.createMany = t.mock.fn(async () => { throw new Error("falha privada"); });
+  prisma.webhookOrder.upsert = t.mock.fn(async () => { throw new Error("falha privada"); });
   const response = await receive(notification()); assert.equal(response.status, 503); assert.equal(jobs.length, 0);
   assert.equal(JSON.stringify(await response.json()).includes("privada"), false);
-});
-test("inserção ignorada sem recibo correspondente não confirma recepção", async t => {
-  prisma.webhookOrder.createMany = t.mock.fn(async () => ({ count: 0 }));
-  assert.equal((await receive(notification())).status, 503);
-  assert.equal(memory.rows("webhookOrder").length, 0);
-  assert.equal(jobs.length, 0);
 });
 test("duplicatas concorrentes são persistidas uma vez e executam um GET", async () => {
   const ts = String(Math.floor(Date.now() / 1000));

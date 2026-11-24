@@ -1,1 +1,0 @@
-export const MAX_QUANTITY_PER_PRODUCT = 100;

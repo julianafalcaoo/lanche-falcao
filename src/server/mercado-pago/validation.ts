@@ -27,9 +27,8 @@ export function parsePayment(value: unknown, method: string): PaymentInput {
     const doc = value.payer.identification;
     if (!record(doc)) throw invalid();
     keys(doc, ["type", "number"]);
-    const documentFormat = doc.type === "CPF" ? /^\d{11}$/ : method === "CARTAO" && doc.type === "CNPJ" ? /^\d{14}$/ : null;
-    if (!documentFormat || typeof doc.number !== "string" || !documentFormat.test(doc.number)) throw invalid();
-    payer.identification = { type: String(doc.type), number: doc.number };
+    if (doc.type !== "CPF" || typeof doc.number !== "string" || !/^\d{11}$/.test(doc.number)) throw invalid();
+    payer.identification = { type: doc.type, number: doc.number };
   }
   if (value.payer.first_name !== undefined) {
     if (production || method !== "PIX" || value.payer.first_name !== "APRO") throw invalid();

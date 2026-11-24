@@ -2,7 +2,6 @@
 
 import { useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { useCart } from "@/components/cart/cart-provider";
 import type { AddressErrors, CheckoutSelection } from "@/types/checkout";
 import { useCheckoutDraft } from "./use-checkout-draft";
@@ -11,53 +10,27 @@ import { OrderSummary } from "./order-summary";
 import { useCurrentCustomer } from "./use-current-customer";
 import { CustomerIdentification } from "./customer-identification";
 import { PaymentOptions } from "./payment-options";
-import { paymentError, paymentSelection } from "@/lib/payment";
+import { paymentError, reaisToCentavos, type PaymentSelection } from "@/lib/payment";
 import { useCheckoutOrder } from "./use-checkout-order";
 import { PaymentStage } from "./payment-stage";
+import { checkoutIntent } from "@/lib/checkout-intent";
 import { CART_STORAGE_KEY, parseCart } from "@/lib/cart";
-import { ExistingOrderSelection } from "./existing-order-selection";
 import styles from "./checkout-page.module.css";
 
-function goToStage(stage: "selecao" | "pagamento", replace = false, clearOrder = false) {
-  const url = new URL(window.location.href);
-  if (stage === "pagamento") url.searchParams.set("etapa", stage);
-  else url.searchParams.delete("etapa");
-  if (clearOrder) url.searchParams.delete("pedido");
-  if (url.href === window.location.href) return;
-  if (replace) window.history.replaceState(null, "", url);
-  else window.history.pushState(null, "", url);
-}
-const showPayment = () => goToStage("pagamento");
-const showApproval = () => goToStage("pagamento", true);
-
-type CheckoutProps = { deliveryFeeCents: number; onContinue?: (selection: CheckoutSelection) => void };
-
-export function CheckoutPage(props: CheckoutProps) {
-  const params = useSearchParams();
-  const orderId = params.get("pedido");
-  if (orderId !== null && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(orderId)) {
-    return <main className={`container ${styles.page}`}>
-      <h1>Checkout</h1>
-      <p role="alert">Referência de pedido inválida.</p>
-      <Link href="/checkout">Voltar ao checkout</Link>
-    </main>;
-  }
-  return <CheckoutFlow key={orderId ?? "checkout"} {...props} linkedOrderId={orderId} selecting={params.get("etapa") !== "pagamento"} />;
-}
-
-function CheckoutFlow({ deliveryFeeCents, onContinue, linkedOrderId, selecting }: CheckoutProps & { linkedOrderId: string | null; selecting: boolean }) {
+export function CheckoutPage({ cardAvailable, onContinue }: { cardAvailable: boolean; onContinue?: (selection: CheckoutSelection) => void }) {
   const { items, ready, totalInCents, clearCart } = useCart();
   const session = useCurrentCustomer();
   const draft = useCheckoutDraft();
   const { orderType, setOrderType, address, setAddress, ready: draftReady, setPayment } = draft;
-  const feeCents = orderType === "delivery" ? deliveryFeeCents : 0;
-  const customer = session.status === "authenticated" ? session.customer : null;
-  const flow = useCheckoutOrder(customer?.checkoutScope ?? null, selecting, linkedOrderId);
+  const intentBody = { tipo: orderType === "pickup" ? "RETIRADA" : orderType === "delivery" ? "ENTREGA" : null, itens: items,
+    endereco: address, formaPagamento: draft.formaPagamento, precisaTroco: draft.precisaTroco,
+    trocoParaCentavos: draft.precisaTroco ? reaisToCentavos(draft.trocoValor) : null };
+  const intent = checkoutIntent(intentBody);
+  const flow = useCheckoutOrder(ready && draftReady ? intent : null);
   const [paymentMessage, setPaymentMessage] = useState("");
   const [errors, setErrors] = useState<AddressErrors>({});
   const [typeError, setTypeError] = useState("");
   const [feedback, setFeedback] = useState("");
-  const [allowAutomaticPix, setAllowAutomaticPix] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -80,14 +53,19 @@ function CheckoutFlow({ deliveryFeeCents, onContinue, linkedOrderId, selecting }
       setFeedback("Conclua sua identificação para continuar.");
       return;
     }
-    const paymentValidation = paymentError(draft, totalInCents + feeCents);
+    if (!cardAvailable && draft.formaPagamento === "CARTAO") {
+      setPaymentMessage("Cartão temporariamente indisponível. Escolha Pix ou dinheiro.");
+      return;
+    }
+    const paymentValidation = paymentError(draft, totalInCents);
     setPaymentMessage(paymentValidation);
     if (paymentValidation) {
       formRef.current?.querySelector<HTMLInputElement>(draft.formaPagamento ? '[name="trocoValor"]' : '[name="formaPagamento"]')?.focus();
       return;
     }
-    const payment = paymentSelection(draft);
-    if (!payment) return;
+    const payment: PaymentSelection = draft.formaPagamento === "DINHEIRO"
+      ? { formaPagamento: "DINHEIRO", precisaTroco: draft.precisaTroco, trocoParaCentavos: draft.precisaTroco ? reaisToCentavos(draft.trocoValor) : null }
+      : { formaPagamento: draft.formaPagamento as "PIX" | "CARTAO" };
     const selection: CheckoutSelection = orderType === "pickup" ? { orderType, ...payment } : {
       ...payment,
       orderType,
@@ -99,57 +77,23 @@ function CheckoutFlow({ deliveryFeeCents, onContinue, linkedOrderId, selecting }
       },
     };
     if (onContinue) onContinue(selection);
-    else {
-      setAllowAutomaticPix(true);
-      showPayment();
-      void flow.start({ tipo: selection.orderType === "pickup" ? "RETIRADA" : "ENTREGA", itens: items.map(item => ({ productId: item.productId, quantity: item.quantity })),
-        ...(selection.orderType === "delivery" ? { endereco: selection.address } : {}), ...payment });
-    }
+    else void flow.start({ tipo: selection.orderType === "pickup" ? "RETIRADA" : "ENTREGA", itens: items.map(item => ({ productId: item.productId, quantity: item.quantity })),
+      ...(selection.orderType === "delivery" ? { endereco: selection.address } : {}), ...payment });
   }
 
   return <main className={`container ${styles.page}`}>
-    {(selecting || !flow.order) && <Link href="/carrinho" className={styles.back}>← Voltar ao carrinho</Link>}
+    <Link href="/carrinho" className={styles.back}>← Voltar ao carrinho</Link>
     <h1>Checkout</h1>
-    {!ready || !draftReady || !flow.ready ? <p role="status">Carregando checkout…</p> : flow.request && customer ? <>
-      {flow.order ? selecting
-        ? <ExistingOrderSelection key={`${flow.order.id}:${flow.order.formaPagamento}:${flow.order.trocoParaCentavos}`}
-            order={flow.order} customerName={customer.nome} busy={flow.busy} error={flow.error} onResume={() => {
-              setAllowAutomaticPix(false);
-              showPayment();
-            }} onApproved={showApproval}
-            onChange={async payment => {
-              if (!await flow.changePayment(payment)) return false;
-              setAllowAutomaticPix(true);
-              showPayment();
-              return true;
-            }} />
-        : <PaymentStage key={`${flow.order.id}:${flow.order.formaPagamento}`} order={flow.order} allowAutomaticPix={allowAutomaticPix && !linkedOrderId} onChangePayment={() => {
-          setAllowAutomaticPix(false);
-          goToStage("selecao");
-        }} onFinish={() => {
-          setAllowAutomaticPix(false);
+    {!ready || !draftReady || !flow.ready ? <p role="status">Carregando checkout…</p> : flow.request && session.status === "authenticated" ? <>
+      {flow.order ? <PaymentStage key={flow.order.id} order={flow.order} cardAvailable={cardAvailable} onFinish={() => {
         // Preserva itens adicionados/alterados depois da criação deste pedido.
         try {
           const persistedItems = parseCart(localStorage.getItem(CART_STORAGE_KEY));
-          const ordered = flow.order?.itens;
-          if (!linkedOrderId && ordered && persistedItems.length === ordered.length && ordered.every(item =>
-            persistedItems.some(cartItem => cartItem.productId === item.produtoId && cartItem.quantity === item.quantidade))) clearCart();
+          if (flow.request && checkoutIntent(flow.request.body) === intent && checkoutIntent({ ...intentBody, itens: persistedItems }) === intent) clearCart();
         } catch { /* Sem confirmação do carrinho persistido, preservar seus itens. */ }
         flow.finish();
-        goToStage("selecao", true, true);
-      }} /> : <section className={styles.panel}>
-        <h2>Confirmar pedido</h2>
-        <p role="status">{flow.unavailable ? "Este checkout salvo não pode ser retomado com a identificação atual." : flow.busy ? "Enviando pedido…" : "Retome a confirmação do mesmo pedido."}</p>
-        {!flow.unavailable && <button className={styles.primary} disabled={flow.busy} onClick={() => void flow.start()}>Tentar novamente</button>}
-        {(flow.canEdit || flow.unavailable) && <button className={styles.primary} onClick={() => {
-          setAllowAutomaticPix(false);
-          if (flow.unavailable && !linkedOrderId) draft.reset();
-          flow.finish();
-          goToStage("selecao", true, true);
-        }}>{flow.unavailable ? "Iniciar novo checkout" : "Corrigir pedido"}</button>}
-        <p role="alert" className={styles.error}>{flow.error}</p>
-      </section>}
-    </> : flow.request ? <CustomerIdentification session={session} /> : items.length === 0 ? <section className={styles.empty}>
+      }} /> : <section className={styles.panel}><h2>Confirmar pedido</h2><p role="status">{flow.busy ? "Enviando pedido…" : "Retome a confirmação do mesmo pedido."}</p><button className={styles.primary} disabled={flow.busy} onClick={() => void flow.start()}>Tentar novamente</button>{flow.canEdit && <button className={styles.primary} onClick={flow.finish}>Corrigir pedido</button>}<p role="alert" className={styles.error}>{flow.error}</p></section>}
+    </> : items.length === 0 ? <section className={styles.empty}>
       <h2>Seu carrinho está vazio.</h2><p>Adicione produtos para iniciar o checkout.</p><Link className={styles.primary} href="/#cardapio">Ver cardápio</Link>
     </section> : <div className={styles.layout}>
       <div className={styles.panel}>
@@ -168,7 +112,7 @@ function CheckoutFlow({ deliveryFeeCents, onContinue, linkedOrderId, selecting }
           setErrors((current) => ({ ...current, [field]: undefined }));
           setFeedback("");
         }} />}
-        <PaymentOptions payment={draft} error={paymentMessage} onChange={(value) => { setPayment(value); setPaymentMessage(""); setFeedback(""); }} />
+        <PaymentOptions payment={draft} cardAvailable={cardAvailable} error={paymentMessage} onChange={(value) => { setPayment(value); setPaymentMessage(""); setFeedback(""); }} />
       </form>
         <CustomerIdentification session={session} />
         <button className={styles.primary} type="submit" form="checkout-delivery" disabled={session.status !== "authenticated" || session.loggingOut || flow.busy} aria-describedby="next-step-note">Finalizar pedido</button>
@@ -176,7 +120,7 @@ function CheckoutFlow({ deliveryFeeCents, onContinue, linkedOrderId, selecting }
         <p className={styles.feedback} role="status">{session.status === "authenticated" ? feedback : ""}</p>
         <p className={styles.error} role="alert">{flow.error}</p>
       </div>
-      <OrderSummary feeCents={feeCents} />
+      <OrderSummary delivery={orderType === "delivery"} />
     </div>}
   </main>;
 }
