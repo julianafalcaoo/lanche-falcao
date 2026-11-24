@@ -8,7 +8,6 @@ export function Header({ search, onSearch }: { search: string; onSearch: (value:
     <SearchBar value={search} onChange={onSearch} />
     <nav className="header-actions" aria-label="Navegação principal">
       <a href="#cardapio" className="menu-link" aria-current="page">Cardápio</a>
-      <button type="button" disabled aria-label="Perfil" title="Perfil"><Icon name="user" /><span>Perfil</span></button>
       <CartLink className="cart-button" />
     </nav>
   </div></header>;
